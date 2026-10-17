@@ -286,7 +286,8 @@ One Song, Otacon Falcone, Shokra Patel.
 
 ## License
 
-All code is public domain unless otherwise noted. LSL scripts in `scripts/`
+All code is public domain unless otherwise noted; the `LICENSE` file carries
+the Unlicense dedication. LSL scripts in `scripts/`
 are from various sources and the property of their respective owners. The
 `.l` and `.y` files are based on samples provided by Linden Lab. `builtins.txt`
 is derived from Linden Lab's lsl-definitions (MIT license).
