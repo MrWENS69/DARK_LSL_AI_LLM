@@ -109,7 +109,7 @@ jobs:
       - name: Front end tests, lsltest, skill templates
         shell: bash
         run: |
-          python -m unittest -v test_lslcheck test_lsltest
+          python -m unittest -v test_lslcheck test_lsltest test_update_builtins
           python lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
           python lslcheck.py --strict skills/lsl-dev/templates
           python -m lsltest skills/lsl-dev/templates/tests

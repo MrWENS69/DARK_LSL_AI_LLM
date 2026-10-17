@@ -99,7 +99,8 @@ def main():
         lines.append("| E%d | `%s` | %s |" % (code, name, tidy(warnings[code])))
     lines.append("")
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    with open(OUT, "w", encoding="utf-8", newline="\n") as handle:   # Path.write_text has no newline= before Python 3.10
+        handle.write("\n".join(lines))
     print("wrote %s (%d errors, %d warnings)" % (OUT.relative_to(ROOT), len(errors) - 1, len(warnings) - 1))
     return 0
 

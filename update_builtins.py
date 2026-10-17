@@ -45,6 +45,12 @@ SAFE_LINE = re.compile(r"[\x15\x20-\x7e\ufdd0-\ufdef]{1,1000}")  # \x15: the NAK
 MAX_DOWNLOAD = 5000000
 
 
+def _write(path, text):
+    """LF line endings on every platform (Path.write_text has no newline= before Python 3.10)."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 class _TokenStaysHome(urllib.request.HTTPRedirectHandler):
     """A redirect to another host does not carry the GitHub token along."""
 
@@ -417,13 +423,13 @@ def main():
     old_text = BUILTINS_TXT.read_text(encoding="utf-8") if BUILTINS_TXT.exists() else ""
     report(old_text, new_text)
 
-    BUILTINS_TXT.write_text(new_text, encoding="utf-8", newline="\n")
-    BUILTINS_CC.write_text(render_cc(new_text), encoding="utf-8", newline="\n")
-    VERSION_TXT.write_text(version_body, encoding="utf-8", newline="\n")
+    _write(BUILTINS_TXT, new_text)
+    _write(BUILTINS_CC, render_cc(new_text))
+    _write(VERSION_TXT, version_body)
     bundled = ROOT / "lsltest" / "data" / "builtins.txt"      # the copy shipped inside the lsltest package
     written = [BUILTINS_TXT.name, BUILTINS_CC.name, VERSION_TXT.name]
     if bundled.parent.is_dir():
-        bundled.write_text(new_text, encoding="utf-8", newline="\n")
+        _write(bundled, new_text)
         written.append("lsltest/data/builtins.txt")
     if doc is not None:
         write_doc(doc, DOC_JSON)
