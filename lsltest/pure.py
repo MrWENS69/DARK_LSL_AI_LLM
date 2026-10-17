@@ -5,7 +5,7 @@ function up here when it has no ll_Xxx handler of its own.
 
 Each entry maps the LSL name to a Python callable taking the LSL argument
 values (already coerced to the declared parameter types) and returning an
-LSL value. Functions that act on the world live in sim.py.
+LSL value. Functions that act on the world live in the sim_*.py mixins.
 """
 
 import base64

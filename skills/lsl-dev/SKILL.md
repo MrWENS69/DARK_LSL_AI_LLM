@@ -57,6 +57,10 @@ repository README) or ask the human for the binary. Do not skip the lint.
   modulo. Pure reads and computations (`llGetOwner`, `llList2String`,
   `llAbs`) are fine. Use nested `if` for everything else. The linter reports
   this as warning 20024, printed `[E20024]`.
+- Never write a variable in one function argument, list element, vector or
+  rotation component and use it in another (`f(i++, i)`, `[i, i += 1]`):
+  Linden Lab does not document the order they are evaluated in. The linter
+  reports this as warning 20025.
 - No ternary operator, no `switch` (the `-w` option of lslint accepts one
   only for toolchains that translate it before upload), no `break`, no
   `continue`, no arrays, no structs, no classes, no closures. Use `list`,

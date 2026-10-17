@@ -61,7 +61,8 @@ exit codes. Both get builtins that match the live grid.
   [lsl-definitions](https://github.com/secondlife/lsl-definitions) repository.
   `python update_builtins.py` refreshes it, `builtins_version.txt` records the
   exact source commit. The previous source (kwdb) is retired.
-- **New check `-s`** (warning 20024, printed `[E20024]`): LSL evaluates both
+- **New check `-s`** (warnings 20024 and 20025, printed `[E20024]` and
+  `[E20025]`): LSL evaluates both
   operands of `&&` and `||` unconditionally, right operand first. The check
   reports an operand that acts or can fail: a call to one of your own
   functions, a call to a builtin that acts (`llSay`, `llListen`,
@@ -69,17 +70,18 @@ exit codes. Both get builtins that match the live grid.
   by a non-literal. Pure reads and computations (`llGetOwner`, `llList2*`,
   `llAbs`...) are not reported, and neither is a forced delay alone
   (`llModPow`, `llXorBase64Strings`, `llGetParcelPrimOwners`): the script
-  stalls, nothing changes. A second rule under the same flag (warning 20025)
-  reports a variable written in one function argument, list element or
-  vector component and used in another: Linden Lab does not document the
+  stalls, nothing changes. The second rule (warning 20025) reports a
+  variable written in one function argument, list element, vector or
+  rotation component and used in another: Linden Lab does not document the
   order those are evaluated in.
 - **`lslcheck --doc NAME`**: the reference of any function, event or
   constant without leaving the terminal: signature, what it does, each
   parameter, forced delay and energy, the wiki page. Generated from Linden
   Lab's `lsl_definitions.yaml` by `update_builtins.py` into
   `lsltest/data/lsl_doc.json`, so it is as current as the builtins. A prefix
-  lists the matching names (`lslcheck --doc CHANGED_`), `--json` gives the
-  entries as data.
+  lists the signatures of the matching names, case-insensitive, sixty at
+  most (`lslcheck --doc CHANGED_`); `--json` gives the entries as data. Put
+  `--doc` last: every argument after it is a name.
 - **Three bug fixes** in the analyzer: an uninitialized switch-depth counter
   made error 10033 (break outside switch) appear or vanish depending on the
   environment, a dangling symbol pointer in `-F` mode produced random "Not all
@@ -161,7 +163,7 @@ lslcheck --doc NAME...            reference of functions, events, constants (exa
   -q, --quiet       only the summary line
   --lso             LSO rules instead of Mono
   -b FILE           alternate builtins.txt
-  --no-side-effects do not pass -s to lslint
+  --no-side-effects disable the -s checks (side effects in && / ||, writes across siblings)
   --lslint PATH     the lslint binary (also: LSLINT environment variable)
   --no-download     never fetch the binary (also: LSLCHECK_NO_DOWNLOAD=1)
   -w -z -i -u -G -F forwarded to lslint (switch, lazy lists, ignore
@@ -171,7 +173,8 @@ lslcheck --doc NAME...            reference of functions, events, constants (exa
 
 Exit codes: 0 clean, 1 at least one error (or a warning with `--strict`),
 2 tool failure (binary missing, a path that does not exist, lslint crashed
-or timed out, no `.lsl` file found).
+or timed out, no `.lsl` file found). With `--doc`: 0 every name found, 1 at
+least one name matched nothing, 2 `lsl_doc.json` not found.
 
 JSON report: `{"lslint": path, "flags": [...], "files": [{"path", "errors",
 "warnings", "messages": [{"level": "ERROR"|"WARN"|"INFO", "line", "col",
@@ -179,6 +182,17 @@ JSON report: `{"lslint": path, "flags": [...], "files": [{"path", "errors",
 "error"}], "total": {"files", "errors", "warnings"}, "ok": bool}`. Positions
 and `code` are `null` when lslint printed none. `ok` is true exactly when the
 exit code is 0.
+
+JSON of `--doc`: `{"source": "secondlife/lsl-definitions", "results":
+[{"query": NAME, "matches": [ENTRY...]}]}`. An `ENTRY` is the
+`lsl_doc.json` entry plus `kind` (`function`, `event` or `constant`),
+`name`, `signature` and `url`. A function has `return`, `args`, `tooltip`,
+`sleep` (the forced delay in seconds, 0 when none), `energy`, and when they
+apply `deprecated`, `pure`, `god-mode`, `experience` (true) and
+`requires-permission` (a list of `PERMISSION_*`). An event has `args` and
+`tooltip`; a constant `type`, `value` (text, as in `builtins.txt`), `tooltip`
+and when deprecated `use`. `args` is a list of `[name, type, tooltip]`
+triples. The hyphenated keys are Linden Lab's own field names.
 
 ## Building
 
@@ -243,7 +257,9 @@ request.
 -a          Don't report marked warnings/errors (default on)
 -i          Ignore preprocessor directives
 -u          Warn about unused event parameters
--s          Warn about calls, assignments, ++/-- and divisions in && / || operands
+-s          Warn about calls, assignments, ++/-- and divisions in && / || operands,
+            and about a variable written in one function argument, list element
+            or vector component and used in another
 -w          Enable switch statements
 -z          Enable lazy list syntax
 -G          Enable god mode

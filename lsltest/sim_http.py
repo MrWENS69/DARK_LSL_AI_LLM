@@ -1,19 +1,104 @@
-"""HTTP out (llHTTPRequest) and HTTP in (llRequestURL, llHTTPResponse). Mixed into Simulator."""
+"""HTTP out (llHTTPRequest, answered by the test or by sim.http_handler) and HTTP in (llRequestURL, llHTTPResponse, sim.http_in_request). Mixed into Simulator."""
 
 from .errors import ScriptError
-from .limits import (HTTP_BODY_DEFAULT, HTTP_BODY_MAXLENGTH, HTTP_METHOD, MAX_URLS, URL_REQUEST_DENIED,
-                     URL_REQUEST_GRANTED, _CONTENT_TYPES)
+from .limits import (HTTP_BODY_DEFAULT, HTTP_BODY_MAXLENGTH, HTTP_BODY_TRUNCATED, HTTP_CUSTOM_HEADER,
+                     HTTP_METHOD, MAX_URLS, URL_REQUEST_DENIED, URL_REQUEST_GRANTED)
+from .signatures import CONSTANTS
 from .values import to_string, type_of, NULL_KEY
-from .world import HttpOutRequest, _http_options
+from .world import HttpOutRequest, clip_text
+
+
+def http_options(params):
+    """The HTTP_* flags of llHTTPRequest as {flag: value}, plus the (name, value) custom headers."""
+    options, headers, i = {}, [], 0
+    while i < len(params):
+        if params[i] == HTTP_CUSTOM_HEADER:
+            headers.append(tuple(to_string(v) for v in params[i + 1:i + 3]))
+            i += 3
+        else:
+            if i + 1 < len(params):
+                options[params[i]] = params[i + 1]
+            i += 2
+    return options, headers
+
+
+CONTENT_TYPES = {CONSTANTS[name]: mime for name, mime in (
+    ("CONTENT_TYPE_TEXT", "text/plain"), ("CONTENT_TYPE_HTML", "text/html"), ("CONTENT_TYPE_XML", "application/xml"),
+    ("CONTENT_TYPE_XHTML", "application/xhtml+xml"), ("CONTENT_TYPE_ATOM", "application/atom+xml"),
+    ("CONTENT_TYPE_JSON", "application/json"), ("CONTENT_TYPE_LLSD", "application/llsd+xml"),
+    ("CONTENT_TYPE_FORM", "application/x-www-form-urlencoded"), ("CONTENT_TYPE_RSS", "application/rss+xml"))
+    if name in CONSTANTS}
 
 
 class HttpMixin(object):
-    """HTTP out (llHTTPRequest) and HTTP in (llRequestURL, llHTTPResponse)."""
 
-    # --- HTTP out -------------------------------------------------------------
+    def _drop_urls(self, obj):
+        """Rez and region restart invalidate every HTTP-in URL of the object, as on the grid."""
+        for script in obj.scripts:
+            for url in list(script.urls):
+                self.ll_ReleaseURL(script, url)
+
+    def _answer(self, request, status, body, metadata=None):
+        """Deliver the response: the body is cut at the request's HTTP_BODY_MAXLENGTH and the
+        metadata then starts with [HTTP_BODY_TRUNCATED, limit]."""
+        metadata = list(metadata or [])
+        if len(body.encode("utf-8")) > request.maxlen:
+            body = clip_text(body, request.maxlen)
+            metadata = [HTTP_BODY_TRUNCATED, request.maxlen] + metadata
+        request.response = (status, body)
+        self._http_pending.remove(request)
+        self._post_prim(request.script, "http_response", [request.key, status, metadata, body])
+
+    def http_respond(self, status=200, body="", request=None, metadata=None):
+        """Answer a pending llHTTPRequest (the oldest unanswered one by default), then run."""
+        if request is None:
+            if not self._http_pending:
+                raise AssertionError("no pending HTTP request")
+            request = self._http_pending[0]
+        self._answer(request, status, body, metadata)
+        self.run()
+
+    def auto_respond(self):
+        """Called by run(): hand every unanswered request to http_handler. Returns how many it answered."""
+        count = 0
+        for request in list(self._http_pending):
+            answer = self.http_handler(request)
+            if answer is None:
+                continue
+            status, body = answer
+            self._answer(request, status, body)
+            count += 1
+        return count
+
+    def http_in_request(self, url, method="GET", body="", headers=None):
+        """Send a request to a script's HTTP-in URL; returns (status, body, content_type)."""
+        base = url.split("?", 1)[0]
+        script = None
+        for known, owner in self.http_in.items():
+            if base == known or base.startswith(known + "/"):
+                script = owner
+                break
+        if script is None:
+            return (404, "no such URL", "text/plain")
+        key = self.new_key()
+        path_info = base[len(known):]
+        query = url.split("?", 1)[1] if "?" in url else ""
+        request_headers = {k.lower(): v for k, v in (headers or {}).items()}
+        request_headers.setdefault("x-script-url", known)
+        request_headers.setdefault("x-path-info", path_info)
+        request_headers.setdefault("x-query-string", query)
+        request_headers.setdefault("x-remote-ip", "127.0.0.1")
+        request_headers.setdefault("user-agent", "lsltest")
+        self.http_in_pending[key] = {"status": None, "body": "", "content_type": "text/plain", "headers": request_headers}
+        script.post("http_request", [key, method, clip_text(body, 2048)])
+        self.run()
+        answer = self.http_in_pending.pop(key)
+        if answer["status"] is None:
+            return (500, "the script did not answer", "text/plain")
+        return (answer["status"], answer["body"], answer["content_type"])
 
     def ll_HTTPRequest(self, script, url, params, body):
-        options, headers = _http_options(params)
+        options, headers = http_options(params)
         if any(h and h[0].lower() == "content-type" for h in headers):
             raise ScriptError("Script run-time error",
                               "llHTTPRequest: Content-Type is set with HTTP_MIMETYPE, not with HTTP_CUSTOM_HEADER")
@@ -35,8 +120,6 @@ class HttpMixin(object):
         self._keep(self.http_out, request)
         self._http_pending.append(request)
         return key
-
-    # --- HTTP in --------------------------------------------------------------
 
     def ll_RequestURL(self, script):
         key = self.new_key()
@@ -67,7 +150,7 @@ class HttpMixin(object):
     def ll_SetContentType(self, script, request_id, content_type):
         pending = self.http_in_pending.get(request_id)
         if pending is not None:
-            pending["content_type"] = _CONTENT_TYPES.get(content_type, "text/plain")
+            pending["content_type"] = CONTENT_TYPES.get(content_type, "text/plain")
 
     def ll_GetHTTPHeader(self, script, request_id, header):
         pending = self.http_in_pending.get(request_id)

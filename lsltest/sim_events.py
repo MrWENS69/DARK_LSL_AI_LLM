@@ -1,15 +1,47 @@
-"""Link messages, permissions and animations, sensors. Mixed into Simulator."""
+"""Builtins that raise events in other scripts or later: link messages, permissions and animations, sensors. Mixed into Simulator."""
 
 from types import SimpleNamespace
 
-from .limits import LINK_ALL_CHILDREN, LINK_ALL_OTHERS, LINK_SET, LINK_THIS, MIN_TIMER
-from .values import Key, NULL_KEY
+from . import pure
+from .limits import (ACTIVE, AGENT, LINK_ALL_CHILDREN, LINK_ALL_OTHERS, LINK_SET, LINK_THIS, MIN_TIMER,
+                     PASSIVE, SCRIPTED, SENSOR_MAX)
+from .values import Key, NULL_KEY, is_valid_key
 
 
-class LinksMixin(object):
-    """Link messages, permissions and animations, sensors."""
+class EventsMixin(object):
 
-    # --- link messages ---------------------------------------------------------
+    def _post_prim(self, script, event, args):
+        """Post an event to every script of the prim: http_response and dataserver reach them all."""
+        for other in script.obj.scripts:
+            other.post(event, args)
+
+    def deliver_sensor(self, script, name, id_, kind, range_, arc):
+        found = []
+        here = script.obj.pos
+        if kind & AGENT:
+            for av in self.avatars.values():
+                if script.obj.wearer is not None and av.key == script.obj.wearer.key:
+                    continue          # an attachment never detects its wearer
+                if pure.llVecDist(here, av.pos) <= range_:
+                    if name and av.name != name:
+                        continue
+                    if is_valid_key(id_) and id_ != NULL_KEY and av.key != id_:
+                        continue
+                    found.append(self._detected_record(avatar=av))
+        if kind & (ACTIVE | PASSIVE | SCRIPTED):
+            for obj in self.objects:
+                if obj is script.obj or not obj.alive or obj.attached:
+                    continue
+                if pure.llVecDist(here, obj.pos) <= range_:
+                    if name and obj.name != name:
+                        continue
+                    found.append(self._detected_record(obj=obj))
+        found.sort(key=lambda d: pure.llVecDist(here, d["pos"]))
+        found = found[:SENSOR_MAX]
+        if found:
+            script.post("sensor", [len(found)], found)
+        else:
+            script.post("no_sensor", [])
 
     def ll_MessageLinked(self, script, link, num, text, id_):
         """Delivery is by prim: every script of a target prim gets the message, the sender included."""
@@ -29,8 +61,6 @@ class LinksMixin(object):
             )
             if deliver:
                 other.post("link_message", [sender, num, text, Key(id_)])
-
-    # --- permissions and animations -----------------------------------------
 
     def ll_RequestPermissions(self, script, agent, perms):
         if perms == 0:
@@ -52,8 +82,6 @@ class LinksMixin(object):
 
     def ll_GetPermissionsKey(self, script):
         return Key(script.permissions_key)
-
-    # --- sensors --------------------------------------------------------------
 
     def ll_Sensor(self, script, name, id_, kind, range_, arc):
         self.deliver_sensor(script, name, id_, kind, range_, arc)

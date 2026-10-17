@@ -109,7 +109,7 @@ class LLScriptIdentifier : public LLASTNode {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "identifier \"%s%s%s\"", name, member ? "." : "", member ? member : "" );
+      snprintf(buf, sizeof(buf), "identifier \"%s%s%s\"", name, member ? "." : "", member ? member : "" );
       return (const char *)buf;
     }
     virtual LLNodeType get_node_type() { return NODE_IDENTIFIER; };
@@ -160,7 +160,7 @@ class LLScriptIntegerConstant : public LLScriptConstant {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "integer constant: %d", value);
+      snprintf(buf, sizeof(buf), "integer constant: %d", value);
       return (const char *)buf;
     }
 
@@ -185,7 +185,7 @@ class LLScriptFloatConstant : public LLScriptConstant {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "float constant: %.9g", value);
+      snprintf(buf, sizeof(buf), "float constant: %.9g", value);
       return (const char *)buf;
     }
 
@@ -208,7 +208,7 @@ class LLScriptStringConstant : public LLScriptConstant {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "string constant: `%s'", value);
+      snprintf(buf, sizeof(buf), "string constant: `%s'", value);
       return (const char *)buf;
     }
 
@@ -231,7 +231,7 @@ class LLScriptKeyConstant : public LLScriptConstant {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "key constant: `%s'", value);
+      snprintf(buf, sizeof(buf), "key constant: `%s'", value);
       return (const char *)buf;
     }
 
@@ -254,7 +254,7 @@ class LLScriptListConstant : public LLScriptConstant {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf(buf, "list constant: `%p'", (void *)value);
+      snprintf(buf, sizeof(buf), "list constant: `%p'", (void *)value);
       return (const char *)buf;
     }
 
@@ -293,9 +293,9 @@ class LLScriptVectorConstant : public LLScriptConstant {
     virtual const char *get_node_name() {
       static char buf[256];
       if ( value )
-        sprintf(buf, "vector constant: <%g, %g, %g>", value->x, value->y, value->z);
+        snprintf(buf, sizeof(buf), "vector constant: <%g, %g, %g>", value->x, value->y, value->z);
       else
-        sprintf(buf, "vector constant: unknown value?" );
+        snprintf(buf, sizeof(buf), "vector constant: unknown value?" );
       return (const char *)buf;
     }
 
@@ -327,9 +327,9 @@ class LLScriptQuaternionConstant : public LLScriptConstant {
     virtual const char *get_node_name() {
       static char buf[256];
       if (value)
-        sprintf(buf, "quaternion constant: <%g, %g, %g, %g>", value->x, value->y, value->z, value->s);
+        snprintf(buf, sizeof(buf), "quaternion constant: <%g, %g, %g, %g>", value->x, value->y, value->z, value->s);
       else
-        sprintf(buf, "quaternion constant: unknown value?" );
+        snprintf(buf, sizeof(buf), "quaternion constant: unknown value?" );
       return (const char *)buf;
     }
 
@@ -551,7 +551,7 @@ class LLScriptExpression : public LLASTNode {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf( buf, is_printable_operator(operation) ? "expression: '%c'" : "expression: =%d", operation );
+      snprintf( buf, sizeof(buf), is_printable_operator(operation) ? "expression: '%c'" : "expression: =%d", operation );
       return (const char *)buf;
     };
     virtual LLNodeType get_node_type() { return NODE_EXPRESSION; };

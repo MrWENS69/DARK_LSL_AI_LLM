@@ -6,8 +6,9 @@ in, HTTP-in requests and the responses the script gave, permissions, linkset
 data, hover text, inventory, and every call to a builtin it does not model
 (recorded with its arguments, so nothing is silently lost).
 
-The builtins that act live in the sim_*.py mixins (one method ll_Xxx per builtin); the records in
-world.py; the constants and limits in limits.py.
+The builtins that act live in the mixins (one method ll_Xxx per builtin): sim_chat, sim_time,
+sim_objects, sim_http, sim_events, sim_linkset_data. The records are in world.py, the constants
+and limits in limits.py.
 """
 
 import os
@@ -17,24 +18,23 @@ import uuid
 from . import pure
 from ._version import __version__
 from .errors import LslSyntaxError, ResetSignal, ScriptError, UnsupportedError
-from .interp import MAX_HANDLER_SECONDS, MAX_STATEMENTS, Script
-from .limits import (ACTIVE, AGENT, CHANGED_REGION, CHANGED_REGION_START, DEBUG_CHANNEL, HTTP_BODY_TRUNCATED,
-                     INVENTORY_NOTECARD, INVENTORY_SCRIPT, MAX_RECORDS, MAX_RUN_ROUNDS, MAX_SCRIPT_BYTES,
-                     MAX_TICK_STEPS, PASSIVE, RECORD_ONLY, SCRIPTED, SENSOR_MAX)
+from .interp import Script
+from .limits import (AGENT, CHANGED_REGION, CHANGED_REGION_START, INVENTORY_NOTECARD, INVENTORY_SCRIPT,
+                     MAX_HANDLER_SECONDS, MAX_RECORDS, MAX_RUN_ROUNDS, MAX_SCRIPT_BYTES, MAX_STATEMENTS,
+                     MAX_TICK_STEPS, PASSIVE, RECORD_ONLY)
 from .signatures import CONSTANTS, SIGNATURES
-from .values import (Key, check_size, coerce, default_value, ZERO_VECTOR, ZERO_ROTATION, NULL_KEY,
-                     is_valid_key)
-from .world import Avatar, SimObject, Chat, _clip
+from .values import Key, check_size, coerce, default_value, ZERO_VECTOR, ZERO_ROTATION, NULL_KEY
+from .world import Avatar, SimObject, Chat, clip_text
 from .sim_chat import ChatMixin
+from .sim_events import EventsMixin
 from .sim_http import HttpMixin
-from .sim_links import LinksMixin
-from .sim_linkset import LinksetMixin
-from .sim_misc import MiscMixin
+from .sim_linkset_data import LinksetDataMixin
 from .sim_objects import ObjectsMixin
 from .sim_time import TimeMixin
 
 
-class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, LinksetMixin, MiscMixin):
+class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, EventsMixin, LinksetDataMixin):
+
     def __init__(self, seed=42, region_name="Test Region", strict=False):
         self.time = 0.0                       # simulated seconds since the simulator was created
         self.epoch = 1700000000               # llGetUnixTime at time 0
@@ -62,7 +62,6 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
         self.constants = CONSTANTS            # LSL constants by name, from builtins.txt
         self.signatures = SIGNATURES          # builtin name -> (return type, [parameter types])
         self.owner = self.avatar("Test Owner")   # owner of every object rezzed without an explicit owner
-    # --- world setup -------------------------------------------------------
 
     def new_key(self):
         return Key(str(uuid.UUID(int=self.rng.getrandbits(128), version=4)))
@@ -117,8 +116,6 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
 
     def all_scripts(self):
         return [s for o in self.objects if o.alive for s in o.scripts]
-
-    # --- running -------------------------------------------------------------
 
     def start(self):
         """Run state_entry of every script, like a fresh rez, then drain the queues."""
@@ -199,8 +196,6 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
                 self.deliver_sensor(script, rep.name, rep.id, rep.type, rep.range, rep.arc)
                 rep.due = self.time + rep.rate
 
-    # --- event injection ---------------------------------------------------
-
     def _detected_record(self, avatar=None, obj=None):
         """What llDetected* reads for one detected avatar or object (keys mirror the llDetected* names)."""
         if avatar is not None:
@@ -230,7 +225,7 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
 
     def say(self, avatar, channel, text):
         """An avatar speaks on a channel; listening scripts receive listen()."""
-        text = _clip(text, 1024)
+        text = clip_text(text, 1024)
         self._keep(self.chat, Chat(channel, avatar.key, avatar.name, text, "avatar", None, self.time))
         self.deliver_chat(channel, avatar.key, avatar.name, text, source_obj=None, target=None)
         self.run()
@@ -249,12 +244,6 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
                 self.say(avatar, box.channel, text)
                 return box
         raise AssertionError("no textbox was shown to %s" % avatar.name)
-
-    def _drop_urls(self, obj):
-        """Rez and region restart invalidate every HTTP-in URL of the object, as on the grid."""
-        for script in obj.scripts:
-            for url in list(script.urls):
-                self.ll_ReleaseURL(script, url)
 
     def changed(self, flags, obj=None):
         obj = obj or self.objects[0]
@@ -298,119 +287,6 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
         script.reset()
         self.run()
 
-    def _post_prim(self, script, event, args):
-        """Post an event to every script of the prim: http_response and dataserver reach them all."""
-        for other in script.obj.scripts:
-            other.post(event, args)
-
-    def _answer(self, request, status, body, metadata=None):
-        """Deliver the response: the body is cut at the request's HTTP_BODY_MAXLENGTH and the
-        metadata then starts with [HTTP_BODY_TRUNCATED, limit]."""
-        metadata = list(metadata or [])
-        if len(body.encode("utf-8")) > request.maxlen:
-            body = _clip(body, request.maxlen)
-            metadata = [HTTP_BODY_TRUNCATED, request.maxlen] + metadata
-        request.response = (status, body)
-        self._http_pending.remove(request)
-        self._post_prim(request.script, "http_response", [request.key, status, metadata, body])
-
-    def http_respond(self, status=200, body="", request=None, metadata=None):
-        """Answer a pending llHTTPRequest (the oldest unanswered one by default), then run."""
-        if request is None:
-            if not self._http_pending:
-                raise AssertionError("no pending HTTP request")
-            request = self._http_pending[0]
-        self._answer(request, status, body, metadata)
-        self.run()
-
-    def auto_respond(self):
-        """Called by run(): hand every unanswered request to http_handler. Returns how many it answered."""
-        count = 0
-        for request in list(self._http_pending):
-            answer = self.http_handler(request)
-            if answer is None:
-                continue
-            status, body = answer
-            self._answer(request, status, body)
-            count += 1
-        return count
-
-    def http_in_request(self, url, method="GET", body="", headers=None):
-        """Send a request to a script's HTTP-in URL; returns (status, body, content_type)."""
-        base = url.split("?", 1)[0]
-        script = None
-        for known, owner in self.http_in.items():
-            if base == known or base.startswith(known + "/"):
-                script = owner
-                break
-        if script is None:
-            return (404, "no such URL", "text/plain")
-        key = self.new_key()
-        path_info = base[len(known):]
-        query = url.split("?", 1)[1] if "?" in url else ""
-        request_headers = {k.lower(): v for k, v in (headers or {}).items()}
-        request_headers.setdefault("x-script-url", known)
-        request_headers.setdefault("x-path-info", path_info)
-        request_headers.setdefault("x-query-string", query)
-        request_headers.setdefault("x-remote-ip", "127.0.0.1")
-        request_headers.setdefault("user-agent", "lsltest")
-        self.http_in_pending[key] = {"status": None, "body": "", "content_type": "text/plain", "headers": request_headers}
-        script.post("http_request", [key, method, _clip(body, 2048)])
-        self.run()
-        answer = self.http_in_pending.pop(key)
-        if answer["status"] is None:
-            return (500, "the script did not answer", "text/plain")
-        return (answer["status"], answer["body"], answer["content_type"])
-
-    def deliver_sensor(self, script, name, id_, kind, range_, arc):
-        found = []
-        here = script.obj.pos
-        if kind & AGENT:
-            for av in self.avatars.values():
-                if script.obj.wearer is not None and av.key == script.obj.wearer.key:
-                    continue          # an attachment never detects its wearer
-                if pure.llVecDist(here, av.pos) <= range_:
-                    if name and av.name != name:
-                        continue
-                    if is_valid_key(id_) and id_ != NULL_KEY and av.key != id_:
-                        continue
-                    found.append(self._detected_record(avatar=av))
-        if kind & (ACTIVE | PASSIVE | SCRIPTED):
-            for obj in self.objects:
-                if obj is script.obj or not obj.alive or obj.attached:
-                    continue
-                if pure.llVecDist(here, obj.pos) <= range_:
-                    if name and obj.name != name:
-                        continue
-                    found.append(self._detected_record(obj=obj))
-        found.sort(key=lambda d: pure.llVecDist(here, d["pos"]))
-        found = found[:SENSOR_MAX]
-        if found:
-            script.post("sensor", [len(found)], found)
-        else:
-            script.post("no_sensor", [])
-
-    def deliver_chat(self, channel, speaker_key, speaker_name, text, source_obj, target):
-        for script in self.all_scripts():
-            if source_obj is not None and script.obj is source_obj:
-                continue                      # an object never hears itself
-            if target is not None and script.obj.key != target and (
-                    script.obj.wearer is None or script.obj.wearer.key != target):
-                continue                      # llRegionSayTo: the target object, or the target avatar's attachments
-            for listen in script.listens.values():
-                if not listen.active or listen.channel != channel:
-                    continue
-                if listen.name and listen.name != speaker_name:
-                    continue
-                if listen.id and listen.id != speaker_key:
-                    continue
-                if listen.msg and listen.msg != text:
-                    continue
-                script.post("listen", [channel, speaker_name, Key(speaker_key), text])
-                break
-
-    # --- builtin dispatch --------------------------------------------------
-
     def call_builtin(self, script, name, args):
         sig = SIGNATURES.get(name)
         if sig is None:
@@ -437,7 +313,3 @@ class Simulator(ChatMixin, TimeMixin, ObjectsMixin, HttpMixin, LinksMixin, Links
 
     def record_call(self, script, name, *args):
         self._keep(self.calls, (script.name, name, list(args)))
-
-    def _debug(self, script, text):
-        """What the grid shouts on DEBUG_CHANNEL; visible in sim.chat with kind "debug"."""
-        self._keep(self.chat, Chat(DEBUG_CHANNEL, script.obj.key, script.obj.name, text, "debug", None, self.time))

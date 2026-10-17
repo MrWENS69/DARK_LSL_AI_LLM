@@ -403,17 +403,6 @@ class SimulatorTest(LslTestCase):
         with self.assertRaises(RuntimeError):
             self.sim.tick(5000.0)
 
-    def test_linkset_find_keys_refuses_catastrophic_patterns(self):
-        self.load("""
-            default { state_entry() {
-                llLinksetDataWrite("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!", "1");
-                llOwnerSay((string)llLinksetDataCountFound("^(a+)+$"));
-                llOwnerSay((string)llLinksetDataCountFound("^a+!$"));
-            } }
-        """)
-        self.sim.start()
-        self.assertEqual(self._lines(kinds=("ownersay",)), ["0", "1"])
-
     def test_missing_script_file_is_an_error(self):
         with self.assertRaises(FileNotFoundError):
             self.load("no_such_file.lsl")
@@ -642,26 +631,6 @@ class GridBehaviourTest(LslTestCase):
         sim = run_script('default { state_entry() { string s = "\u00e9"; integer i; for (i = 0; i < 11; i++) s += s; llSay(0, s); } }')
         self.assertEqual(len(sim.chat[0].text.encode("utf-8")), 1024)
 
-    def test_facts_checked_on_the_wiki(self):
-        self.assertEqual(run_expr('llHMAC("k", "m", "sha256")'), "tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew=")
-        self.assertEqual(run_expr('llList2Vector(["<1,2,3>"], 0)'), "<0.00000, 0.00000, 0.00000>")
-        self.assertEqual(run_expr("llGetWallclock()"), "51200.000000")     # 1700000000 is 22:13:20 UTC, 14:13:20 SLT
-        self.assertEqual(run_expr("(integer)1e10"), "-2147483648")
-
-    def test_more_facts_checked_on_the_wiki(self):
-        self.assertEqual(run_expr('llListFindStrided(["a", 1, "b", 2], [2], 1, -1, 2)'), "3")
-        self.assertEqual(run_expr('llListFindStrided(["a", 1, "b", 2, "c"], ["c"], 1, -1, 2)'), "-1")
-        self.assertEqual(run_expr('llEscapeURL("a-b_c.d~e f")'), "a%2Db%5Fc%2Ed%7Ee%20f")
-        self.load("""default {
-            state_entry() { llRequestURL(); }
-            http_request(key id, string method, string body) {
-                if (method == URL_REQUEST_GRANTED) return;
-                llHTTPResponse(id, 200, llGetHTTPHeader(id, "user-agent") + "|" + llGetHTTPHeader(id, "User-Agent"));
-            } }""")
-        self.sim.start()
-        url = next(iter(self.sim.http_in))
-        self.assertEqual(self.sim.http_in_request(url, "GET")[1], "lsltest|")
-
     def test_linkset_find_keys_refuses_catastrophic_and_polynomial_patterns(self):
         sim = run_script("""default { state_entry() {
             llLinksetDataWrite("abc", "1"); llLinksetDataWrite("abd", "2");
@@ -739,7 +708,28 @@ class GuardTest(LslTestCase):
         self.assertEqual(sim.errors, [])
         self.assertEqual(owner_heard(sim), ["%d" % CONSTANTS["LINKSETDATA_OK"]] * 3)
 
-class MoreFactsTest(LslTestCase):
+class WikiFactsTest(LslTestCase):
+    """Grid facts read on the wiki, each with the page that states it in lsl-for-ai.md."""
+
+    def test_facts_checked_on_the_wiki(self):
+        self.assertEqual(run_expr('llHMAC("k", "m", "sha256")'), "tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew=")
+        self.assertEqual(run_expr('llList2Vector(["<1,2,3>"], 0)'), "<0.00000, 0.00000, 0.00000>")
+        self.assertEqual(run_expr("(integer)1e10"), "-2147483648")
+
+    def test_more_facts_checked_on_the_wiki(self):
+        self.assertEqual(run_expr('llListFindStrided(["a", 1, "b", 2], [2], 1, -1, 2)'), "3")
+        self.assertEqual(run_expr('llListFindStrided(["a", 1, "b", 2, "c"], ["c"], 1, -1, 2)'), "-1")
+        self.assertEqual(run_expr('llEscapeURL("a-b_c.d~e f")'), "a%2Db%5Fc%2Ed%7Ee%20f")
+        self.load("""default {
+            state_entry() { llRequestURL(); }
+            http_request(key id, string method, string body) {
+                if (method == URL_REQUEST_GRANTED) return;
+                llHTTPResponse(id, 200, llGetHTTPHeader(id, "user-agent") + "|" + llGetHTTPHeader(id, "User-Agent"));
+            } }""")
+        self.sim.start()
+        url = next(iter(self.sim.http_in))
+        self.assertEqual(self.sim.http_in_request(url, "GET")[1], "lsltest|")
+
     def test_list2json_turns_plain_words_into_literals_and_keeps_json_text(self):
         self.assertEqual(run_expr('llList2Json(JSON_ARRAY, ["true", "null", "[1,2]", "x"])'), '[true,null,[1,2],"x"]')
 

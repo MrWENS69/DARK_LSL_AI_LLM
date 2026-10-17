@@ -21,6 +21,7 @@ import time as _time
 from . import nodes
 from .errors import ResetSignal, ScriptError, UnsupportedError
 from .lexer import tokenize
+from .limits import MAX_CALL_DEPTH, MAX_QUEUE, RECURSION_LIMIT
 from .parser import parse
 from .signatures import CONSTANTS
 from .values import (Vector, Rotation, binary, cast, coerce, default_value, truthy, type_of, unary, f32, NULL_KEY)
@@ -44,12 +45,6 @@ class StateChangeSignal(Exception):
         self.name = name
 
 
-MAX_CALL_DEPTH = 150          # the grid dies with "Stack-Heap Collision" long before this
-MAX_QUEUE = 64                # events queued per script; more are dropped silently
-MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping (sim.max_statements)
-MAX_HANDLER_SECONDS = 20.0    # wall-clock time per event handler, for builtins that cost more than a statement
-                              # (sim.max_handler_seconds)
-RECURSION_LIMIT = 2500        # Python frames allowed while a handler runs: enough for MAX_CALL_DEPTH
 
 
 class Script(object):
@@ -86,6 +81,7 @@ class Script(object):
         self.depth = 0
         self.statements_run = 0
         self.deadline = float("inf")
+        self.scopes = ()               # scope chain of the running statement, for memory_used()
         self._guard(self.reset_globals)
 
     def __repr__(self):
@@ -143,6 +139,7 @@ class Script(object):
             self._guard(lambda: self._run_event(handler, args))
         finally:
             self.detected = []
+            self.scopes = ()
         if not self.dead and self.memory_used() > self.memory_limit:
             self.die(ScriptError("Stack-Heap Collision", "about %d bytes in use" % self.memory_used()))
 
@@ -252,6 +249,7 @@ class Script(object):
 
     def exec_stmt(self, stmt, scopes):
         self.line = stmt.line
+        self.scopes = scopes
         self.statements_run += 1
         if self.statements_run > self.sim.max_statements:
             raise ScriptError("Script run-time error", "lsltest: over %d statements in one handler, the script is looping"
@@ -410,11 +408,11 @@ class Script(object):
 
     # --- introspection for the simulator ---------------------------------
 
-    def memory_used(self, scopes=()):
-        """Rough estimate of the bytes this script uses: code without comments, globals, and the locals
-        of the scope chain given (the running function's, at the periodic check). For llGetFreeMemory."""
+    def memory_used(self, scopes=None):
+        """Rough estimate of the bytes this script uses: code without comments, globals, and the locals of
+        the running function (the scope chain given, or the current one). For llGetFreeMemory too."""
         data = sum(value_size(value) for value in self.globals.values())
-        for scope in scopes:
+        for scope in (self.scopes if scopes is None else scopes):
             data += sum(value_size(value) for value in scope.values())
         return self.code_size + data + 1024
 

@@ -9,7 +9,7 @@ permissions so that an assistant can assert on what a script did.
 Public API:
     from lsltest import Simulator, LslTestCase, Script, ScriptError, LslSyntaxError, UnsupportedError
 Records the simulator hands back: Chat, HttpOutRequest, Avatar and SimObject
-(classes below), and SimpleNamespace objects for dialogs, textboxes, listens,
+(classes in lsltest/world.py), and SimpleNamespace objects for dialogs, textboxes, listens,
 link messages and emails (attributes listed in skills/lsl-dev/references/testing.md).
 """
 

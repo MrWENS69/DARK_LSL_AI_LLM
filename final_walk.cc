@@ -1,4 +1,5 @@
 #include "lslmini.hh"
+#include <map>
 #include <vector>
 
 void LLASTNode::final_walk() {
@@ -123,23 +124,19 @@ void LLScriptListExpression::final_pre_checks() {
    for ( elem = get_children(); elem; elem = elem->get_next() )
       if ( elem->get_type()->get_itype() == LST_LIST )
           ERROR( IN(elem), E_LIST_IN_LIST );
-   if ( warn_side_effects )
-      check_sibling_writes( get_children(), "list elements" );
+   check_sibling_writes( get_children(), "list elements" );
 }
 
 void LLScriptFunctionExpression::final_pre_checks() {
-   if ( warn_side_effects )
-      check_sibling_writes( get_child(1), "function arguments" );
+   check_sibling_writes( get_child(1), "function arguments" );
 }
 
 void LLScriptVectorExpression::final_pre_checks() {
-   if ( warn_side_effects )
-      check_sibling_writes( get_children(), "vector components" );
+   check_sibling_writes( get_children(), "vector components" );
 }
 
 void LLScriptQuaternionExpression::final_pre_checks() {
-   if ( warn_side_effects )
-      check_sibling_writes( get_children(), "rotation components" );
+   check_sibling_writes( get_children(), "rotation components" );
 }
 
 void LLScriptListConstant::final_pre_checks() {
@@ -485,25 +482,23 @@ static void check_sibling_writes(LLASTNode *first, const char *what) {
    std::vector<LLASTNode *> siblings;
    std::vector<std::set<std::string> > reads;
    std::vector<std::set<std::string> > writes;
+   std::map<std::string, int> users;            // how many siblings read or write each name
    std::set<std::string>::iterator name;
    LLASTNode *node;
-   size_t i, j;
+   size_t i;
+   if (!warn_side_effects || first == NULL || first->get_next() == NULL) return;
    for (node = first; node; node = node->get_next()) {
       siblings.push_back(node);
       reads.push_back(std::set<std::string>());
       writes.push_back(std::set<std::string>());
       collect_variable_uses(node, reads.back(), writes.back());
+      for (name = reads.back().begin(); name != reads.back().end(); ++name)
+         users[*name] += 1;
+      for (name = writes.back().begin(); name != writes.back().end(); ++name)
+         if (!reads.back().count(*name)) users[*name] += 1;
    }
-   if (siblings.size() < 2) return;
-   for (i = 0; i < siblings.size(); ++i) {
-      for (name = writes[i].begin(); name != writes[i].end(); ++name) {
-         for (j = 0; j < siblings.size(); ++j) {
-            if (j == i) continue;
-            if (reads[j].count(*name) || writes[j].count(*name)) {
-               ERROR( IN(siblings[i]), W_SIBLING_WRITE_ORDER, name->c_str(), what );
-               break;
-            }
-         }
-      }
-   }
+   for (i = 0; i < siblings.size(); ++i)
+      for (name = writes[i].begin(); name != writes[i].end(); ++name)
+         if (users[*name] > 1)
+            ERROR( IN(siblings[i]), W_SIBLING_WRITE_ORDER, name->c_str(), what );
 }

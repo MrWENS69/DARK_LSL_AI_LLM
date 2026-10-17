@@ -1,15 +1,30 @@
 """Linkset data: llLinksetData* with the 128 KiB quota and the restricted regex matcher. Mixed into Simulator."""
 
+import re
+
 from .limits import (LINKSETDATA_DELETE, LINKSETDATA_EMEMORY, LINKSETDATA_ENOKEY, LINKSETDATA_EPROTECTED,
                      LINKSETDATA_MULTIDELETE, LINKSETDATA_NOTFOUND, LINKSETDATA_NOUPDATE, LINKSETDATA_OK,
-                     LINKSETDATA_RESET, LINKSETDATA_UPDATE, LINKSET_DATA_SIZE, MAX_MATCH_LEN)
-from .world import _safe_pattern
+                     LINKSETDATA_RESET, LINKSETDATA_UPDATE, LINKSET_DATA_SIZE, MAX_MATCH_LEN,
+                     MAX_PATTERN_LEN)
 
 
-class LinksetMixin(object):
-    """Linkset data: llLinksetData* with the 128 KiB quota and the restricted regex matcher."""
+def safe_pattern(pattern):
+    """A compiled regex for llLinksetDataFindKeys, or None when the pattern is refused.
 
-    # --- linkset data ------------------------------------------------------------
+    Python's backtracking engine takes exponential time on nested quantifiers and polynomial time on
+    several unbounded ones, so groups, backreferences and more than one unbounded quantifier are
+    refused; keys are matched on their first MAX_MATCH_LEN characters."""
+    if len(pattern) > MAX_PATTERN_LEN or "(" in pattern or re.search(r"\\\d", pattern):
+        return None
+    if len(re.findall(r"[*+]|\{\d+,\}", pattern)) > 1:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+class LinksetDataMixin(object):
 
     def _linkset_used(self, obj):
         used = sum(len(k.encode("utf-8")) + len(v.encode("utf-8")) for k, v in obj.linkset_data.items())
@@ -31,7 +46,7 @@ class LinksetMixin(object):
         """The keys, sorted, optionally those a (restricted) regex matches."""
         keys = list(obj.linkset_data) + list(obj.linkset_protected)
         if pattern is not None:
-            rx = _safe_pattern(pattern)
+            rx = safe_pattern(pattern)
             if rx is None:
                 return []
             keys = [k for k in keys if rx.search(k[:MAX_MATCH_LEN])]

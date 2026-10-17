@@ -268,6 +268,9 @@ def format_text(result):
 
 # --- --doc: the offline reference ------------------------------------------------------
 
+_UNPRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
 def doc_file():
     """lsl_doc.json: next to this script in a checkout, inside the lsltest package when installed."""
     local = os.path.join(HERE, "lsltest", "data", "lsl_doc.json")
@@ -281,82 +284,79 @@ def doc_file():
     return installed if os.path.isfile(installed) else None
 
 
-def wiki_url(kind, name):
-    page = name[0].upper() + name[1:] if kind != "constant" else name
+def doc_lookup(doc, query):
+    """The entries for one query, each the lsl_doc.json entry plus kind and name: the exact name, else the
+    names equal to it ignoring case, else every name starting with it (ignoring case)."""
+    entries = [dict(entry, kind=kind, name=name)
+               for kind, table in (("function", doc["functions"]), ("event", doc["events"]), ("constant", doc["constants"]))
+               for name, entry in table.items()]
+    exact = [e for e in entries if e["name"] == query]
+    if exact:
+        return exact
+    folded = query.lower()
+    same = [e for e in entries if e["name"].lower() == folded]
+    if same:
+        return same
+    return sorted((e for e in entries if e["name"].lower().startswith(folded)), key=lambda e: (e["kind"], e["name"]))
+
+
+def wiki_url(hit):
+    page = hit["name"] if hit["kind"] == "constant" or not hit["name"] else hit["name"][0].upper() + hit["name"][1:]
     return "https://wiki.secondlife.com/wiki/" + page
 
 
-def doc_lookup(doc, query):
-    """Entries for one query: the exact name (any case), else every name starting with it."""
-    kinds = (("function", doc["functions"]), ("event", doc["events"]), ("constant", doc["constants"]))
-    for kind, table in kinds:
-        if query in table:
-            return [(kind, query, table[query])]
-    lowered = query.lower()
-    exact = [(kind, name, table[name]) for kind, table in kinds for name in table if name.lower() == lowered]
-    if exact:
-        return exact
-    return sorted((kind, name, table[name]) for kind, table in kinds for name in table if name.lower().startswith(lowered))
+def doc_signature(hit):
+    if hit["kind"] == "constant":
+        return "%s %s = %s" % (hit["type"], hit["name"], hit["value"])
+    params = ", ".join("%s %s" % (arg[1], arg[0]) for arg in hit["args"])
+    if hit["kind"] == "event":
+        return "event %s(%s)" % (hit["name"], params)
+    return "%s %s(%s)" % (hit["return"], hit["name"], params)
 
 
-def doc_signature(kind, name, entry):
-    if kind == "constant":
-        return "%s %s = %s" % (entry["type"], name, entry["value"])
-    params = ", ".join("%s %s" % (arg[1], arg[0]) for arg in entry["args"])
-    if kind == "event":
-        return "event %s(%s)" % (name, params)
-    return "%s %s(%s)" % (entry["return"], name, params)
-
-
-def doc_card(kind, name, entry):
-    lines = [doc_signature(kind, name, entry)]
-    if entry.get("tooltip"):
-        lines.append("    " + entry["tooltip"])
-    for arg in entry.get("args", []):
+def doc_card(hit):
+    lines = [doc_signature(hit)]
+    if hit.get("tooltip"):
+        lines.append("    " + hit["tooltip"])
+    for arg in hit.get("args", []):
         if arg[2]:
             lines.append("    %s: %s" % (arg[0], arg[2]))
-    if kind == "function":
-        notes = ["sleep %g s" % entry["sleep"], "energy %g" % entry["energy"]]
-        for flag in ("deprecated", "pure", "god-mode", "experience"):
-            if entry.get(flag):
-                notes.append(flag)
-        if entry.get("requires-permission"):
-            notes.append("needs %s" % ", ".join(entry["requires-permission"]))
+    if hit["kind"] == "function":
+        notes = ["forced delay %g s" % hit["sleep"], "energy %g" % hit["energy"]]
+        notes += [flag for flag in ("deprecated", "pure", "god-mode", "experience") if hit.get(flag)]
+        if hit.get("requires-permission"):
+            notes.append("needs %s" % ", ".join(hit["requires-permission"]))
         lines.append("    " + ", ".join(notes))
-    elif kind == "constant" and entry.get("deprecated"):
-        lines.append("    deprecated" + (", use %s" % entry["use"] if entry.get("use") else ""))
-    lines.append("    " + wiki_url(kind, name))
+    elif hit["kind"] == "constant" and hit.get("deprecated") and "use" not in hit.get("tooltip", "").lower():
+        lines.append("    deprecated" + (", use %s" % hit["use"] if hit.get("use") else ""))
+    lines.append("    " + wiki_url(hit))
     return "\n".join(lines)
 
 
 def show_doc(queries, as_json, log):
+    """--doc: exit 0 when every name was found, 1 when one matched nothing, 2 without lsl_doc.json."""
     path = doc_file()
     if not path:
         log("lsl_doc.json not found (run update_builtins.py, or install the package)")
         return 2
     with open(path, "r", encoding="utf-8") as handle:
         doc = json.load(handle)
-    report = []
-    missing = 0
-    for query in queries:
-        hits = doc_lookup(doc, query)
-        if not hits:
-            missing += 1
-        report.append({"query": query, "matches": [dict(entry, kind=kind, name=name, signature=doc_signature(kind, name, entry),
-                                                        url=wiki_url(kind, name)) for kind, name, entry in hits]})
+    results = [{"query": query, "matches": [dict(hit, signature=doc_signature(hit), url=wiki_url(hit))
+                                            for hit in doc_lookup(doc, query)]} for query in queries]
+    missing = sum(1 for item in results if not item["matches"])
     if as_json:
-        print(json.dumps({"source": doc.get("source", ""), "results": report}, indent=2, ensure_ascii=False))
+        print(json.dumps({"source": doc.get("source", ""), "results": results}, indent=2, ensure_ascii=False))
         return 1 if missing else 0
-    for item in report:
+    for item in results:
         hits = item["matches"]
         if not hits:
             print("%s: no function, event or constant with that name or prefix" % item["query"])
         elif len(hits) == 1 or hits[0]["name"] == item["query"]:
-            print(doc_card(hits[0]["kind"], hits[0]["name"], hits[0]))
+            print(_UNPRINTABLE.sub("?", doc_card(hits[0])))
         else:
             print("%s: %d names" % (item["query"], len(hits)))
             for hit in hits[:60]:
-                print("  %s" % hit["signature"])
+                print("  " + _UNPRINTABLE.sub("?", hit["signature"]))
             if len(hits) > 60:
                 print("  ... %d more, narrow the prefix" % (len(hits) - 60))
     return 1 if missing else 0
@@ -378,7 +378,7 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="emit a JSON report instead of text")
     ap.add_argument("-q", "--quiet", action="store_true", help="only print the summary line")
     ap.add_argument("--no-side-effects", dest="side_effects", action="store_false",
-                    help="disable the && / || side-effect check (lslint -s), on by default")
+                    help="disable the -s checks (side effects in && / ||, writes across siblings), on by default")
     ap.add_argument("--no-download", action="store_true",
                     help="never download the binary from GitHub releases")
     for short, long_, help_ in PASSTHROUGH:

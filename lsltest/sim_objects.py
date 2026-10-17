@@ -1,22 +1,19 @@
-"""Object and avatar getters, llDetected*, inventory and notecards. Mixed into Simulator."""
+"""Object and avatar getters, llDetected*, inventory and notecards, randomness, rezzing. Mixed into Simulator."""
 
 import uuid
 
 from . import pure
 from .limits import (DATA_BORN, DATA_NAME, DATA_ONLINE, DATA_PAYINFO, EOF, INVENTORY_ALL, INVENTORY_NONE,
-                     INVENTORY_NOTECARD, NAK, OBJECT_ATTACHED_POINT, OBJECT_CREATOR, OBJECT_DESC,
-                     OBJECT_GROUP, OBJECT_NAME, OBJECT_OWNER, OBJECT_POS, OBJECT_PRIM_COUNT, OBJECT_ROOT,
-                     OBJECT_ROT, OBJECT_RUNNING_SCRIPT_COUNT, OBJECT_TOTAL_SCRIPT_COUNT, OBJECT_VELOCITY,
-                     PARCEL_DETAILS_AREA, PARCEL_DETAILS_DESC, PARCEL_DETAILS_GROUP, PARCEL_DETAILS_ID,
-                     PARCEL_DETAILS_NAME, PARCEL_DETAILS_OWNER)
-from .values import Key, Vector, ZERO_VECTOR, ZERO_ROTATION, NULL_KEY
-from .world import _clip
+                     INVENTORY_NOTECARD, INVENTORY_OBJECT, NAK, OBJECT_ATTACHED_POINT, OBJECT_CREATOR,
+                     OBJECT_DESC, OBJECT_GROUP, OBJECT_NAME, OBJECT_OWNER, OBJECT_POS, OBJECT_PRIM_COUNT,
+                     OBJECT_ROOT, OBJECT_ROT, OBJECT_RUNNING_SCRIPT_COUNT, OBJECT_TOTAL_SCRIPT_COUNT,
+                     OBJECT_VELOCITY, PARCEL_DETAILS_AREA, PARCEL_DETAILS_DESC, PARCEL_DETAILS_GROUP,
+                     PARCEL_DETAILS_ID, PARCEL_DETAILS_NAME, PARCEL_DETAILS_OWNER)
+from .values import Key, Vector, f32, ZERO_VECTOR, ZERO_ROTATION, NULL_KEY
+from .world import clip_text
 
 
 class ObjectsMixin(object):
-    """Object and avatar getters, llDetected*, inventory and notecards."""
-
-    # --- object and avatar getters -----------------------------------------
 
     def ll_GetOwner(self, script):
         return Key(script.obj.owner)
@@ -82,7 +79,7 @@ class ObjectsMixin(object):
         return script.obj.attached
 
     def ll_SetText(self, script, text, color, alpha):
-        script.obj.text = _clip(text, 254)
+        script.obj.text = clip_text(text, 254)
 
     def ll_GetObjectDetails(self, script, key, params):
         obj = next((o for o in self.objects if o.key == key), None)
@@ -172,8 +169,6 @@ class ObjectsMixin(object):
                    PARCEL_DETAILS_GROUP: NULL_KEY, PARCEL_DETAILS_AREA: 65536, PARCEL_DETAILS_ID: Key("")}
         return [details.get(p, "") for p in params]
 
-    # --- detected ------------------------------------------------------------
-
     def _detected(self, script, index, field, fallback):
         if index < 0 or index >= len(script.detected):
             return fallback
@@ -209,8 +204,6 @@ class ObjectsMixin(object):
     def ll_DetectedTouchFace(self, script, index):
         return 0 if script.detected else -1
 
-    # --- inventory and notecards ---------------------------------------------
-
     def ll_GetInventoryType(self, script, name):
         item = script.obj.inventory.get(name)
         return item[0] if item else INVENTORY_NONE
@@ -240,7 +233,7 @@ class ObjectsMixin(object):
             self._debug(script, "Couldn't find notecard %s" % name)
             return NULL_KEY
         script.obj.cached.add(name)           # an asynchronous read puts the notecard in the grid's cache
-        return self._dataserver(script, _clip(lines[line] if 0 <= line < len(lines) else EOF, 1024))
+        return self._dataserver(script, clip_text(lines[line] if 0 <= line < len(lines) else EOF, 1024))
 
     def ll_GetNumberOfNotecardLines(self, script, name):
         lines = self._notecard_lines(script, name)
@@ -257,3 +250,28 @@ class ObjectsMixin(object):
 
     def ll_RemoveInventory(self, script, name):
         script.obj.inventory.pop(name, None)
+
+    def ll_Frand(self, script, mag):
+        return f32(self.rng.random() * mag)
+
+    def ll_GenerateKey(self, script):
+        return self.new_key()
+
+    def ll_ListRandomize(self, script, src, stride):
+        pieces = pure.chunks(src, stride)
+        if pieces is None:
+            return list(src)
+        self.rng.shuffle(pieces)
+        return [v for c in pieces for v in c]
+
+    def ll_RezObject(self, script, inventory, pos, vel, rot, param):
+        self.record_call(script, "llRezObject", inventory, pos, vel, rot, param)
+        if inventory in script.obj.inventory and script.obj.inventory[inventory][0] == INVENTORY_OBJECT:
+            child = self.rez(inventory, owner=self.avatars.get(script.obj.owner))
+            child.pos = pos
+            child.rot = rot
+            child.start_param = param
+            script.post("object_rez", [Key(child.key)])
+        self.time += 0.1
+
+    ll_RezAtRoot = ll_RezObject

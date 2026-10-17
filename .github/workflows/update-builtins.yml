@@ -1,7 +1,8 @@
 name: Update builtins
 
-# Every day: refresh builtins.txt from secondlife/lsl-definitions, rebuild,
-# run the test corpus, and open a pull request when the definitions changed.
+# Every day: refresh builtins.txt and lsltest/data/lsl_doc.json from
+# secondlife/lsl-definitions, rebuild, run the test corpus, and open a pull
+# request when the definitions changed.
 # Nothing is pushed to the default branch without review.
 
 on:
@@ -12,9 +13,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: update-builtins          # a manual run never races the scheduled one
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
@@ -57,6 +62,7 @@ jobs:
     needs: refresh
     if: needs.refresh.outputs.changed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -72,18 +78,19 @@ jobs:
         run: |
           commit=$(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)
           branch="builtins/${commit}"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "branch $branch already exists: a pull request for this commit is open or was closed, nothing to do"
+          if [ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[].number')" ]; then
+            echo "a pull request for $branch is open or was closed: nothing to do"
             exit 0
           fi
+          git push origin --delete "$branch" 2>/dev/null || true   # a branch left by a run that failed before its PR
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           git add builtins.txt builtins_txt.cc builtins_version.txt lsltest/data/builtins.txt lsltest/data/lsl_doc.json
           git commit -m "builtins: sync with secondlife/lsl-definitions ${commit}"
           git push origin "$branch"
-          # a pull request opened with GITHUB_TOKEN triggers no workflow: start CI on the branch by hand
-          gh workflow run ci.yml --ref "$branch"
           gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
             --title "builtins: sync with secondlife/lsl-definitions ${commit}" \
-            --body "Automated refresh from lsl-definitions. Built and tested on Linux before this PR was opened; the CI run on this branch was dispatched by the workflow (a pull request opened by GITHUB_TOKEN triggers none by itself)."
+            --body "Automated refresh of builtins.txt and lsltest/data/lsl_doc.json from lsl-definitions. Built and tested on Linux before this PR was opened; the CI run on this branch is dispatched by the workflow, since a pull request opened by GITHUB_TOKEN triggers none by itself."
+          # a pull request opened with GITHUB_TOKEN triggers no workflow: start CI on the branch by hand
+          gh workflow run ci.yml --ref "$branch" || echo "::warning::could not dispatch ci.yml on $branch, run it by hand"

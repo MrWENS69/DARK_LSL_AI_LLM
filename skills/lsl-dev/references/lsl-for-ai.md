@@ -9,7 +9,9 @@ code written by people, and models, who know C, JavaScript or Lua.
 
 ## 1. Evaluation order and operators
 
-- Operands are evaluated from right to left. (LSL_Operators)
+- Operands are evaluated from right to left. (LSL_Operators) The order for
+  function arguments, list elements and vector or rotation components is not
+  documented: see "Not verified" below.
 - `&&` and `||` never short-circuit: both operands are always evaluated.
   `if (TRUE || 1/0)` raises a Math Error instead of taking the branch.
   Simulate short-circuit with nested `if`. (LSL_Operators, If)
@@ -120,6 +122,10 @@ code written by people, and models, who know C, JavaScript or Lua.
   and `~` come out as `%2D`, `%5F`, `%2E`, `%7E`. (LlEscapeURL)
 - `llListFindStrided(src, test, start, end, stride)` counts the stride from
   `start`, not from index 0. (LlListFindStrided)
+- `llList2Json` keeps a numeric string quoted (BUG-6284) but turns the plain
+  strings "true", "false" and "null" into JSON literals and keeps well-formed
+  JSON text as JSON; `llJsonSetValue` stores a numeric string as a number.
+  (LlList2Json, LlJsonSetValue)
 - `llListFindList` is type-strict and case-sensitive: `"1"` does not match
   `1`, a string UUID does not match a key UUID. Returns -1 if absent. The
   idiom `if (~llListFindList(l, (list)x))` tests presence. (LlListFindList)
@@ -143,11 +149,6 @@ code written by people, and models, who know C, JavaScript or Lua.
   case-sensitive: `"True"` is invalid. (LlJsonGetValue, Json_usage_in_LSL)
 - `llGetUnixTime` is an integer that overflows on 2038-01-19; `llGetTimestamp`
   is an ISO 8601 UTC string with sub-second precision. (LlGetUnixTime, LlGetTimestamp)
-
-- `llList2Json` keeps a numeric string quoted (BUG-6284) but turns the plain
-  strings "true", "false" and "null" into JSON literals and keeps well-formed
-  JSON text as JSON; `llJsonSetValue` stores a numeric string as a number.
-  (LlList2Json, LlJsonSetValue)
 
 ## 5. Memory
 
@@ -356,10 +357,10 @@ Do not present these as facts without checking in-world:
 
 - Runtime integer overflow behaviour in arithmetic (only literal wrapping
   is documented).
-- The evaluation order of function arguments, list elements and vector
-  components (only "operands" are documented as right to left). Never let
-  one of them write a variable another one uses: `lslint -s` reports it
-  (warning 20025). lsltest evaluates arguments and list elements left to
+- The evaluation order of function arguments, list elements and vector or
+  rotation components (only "operands" are documented as right to left).
+  Never let one of them write a variable another one uses: `lslint -s`
+  reports it (warning 20025). lsltest evaluates arguments and list elements left to
   right and vector components right to left.
 - Minimum timer interval and whether queued timer events coalesce.
 - Maximum `num_detected` for touch and collision events.

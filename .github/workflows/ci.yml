@@ -31,7 +31,7 @@ jobs:
         run: sh test.sh
       - name: Front end tests, lsltest, skill templates
         run: |
-          python3 -m unittest -v test_lslcheck test_lsltest
+          python3 -m unittest -v test_lslcheck test_lsltest test_update_builtins
           python3 lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
           python3 lslcheck.py --strict skills/lsl-dev/templates
           python3 -m lsltest skills/lsl-dev/templates/tests
@@ -58,7 +58,8 @@ jobs:
         run: sh test.sh
       - name: Front end tests, lsltest, skill templates
         run: |
-          python3 -m unittest -v test_lslcheck test_lsltest
+          python3 -m unittest -v test_lslcheck test_lsltest test_update_builtins
+          python3 lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
           python3 lslcheck.py --strict skills/lsl-dev/templates
           python3 -m lsltest skills/lsl-dev/templates/tests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -67,7 +68,7 @@ jobs:
           path: lslint
 
   python38:
-    name: lsltest on Python 3.8
+    name: lslcheck and lsltest on Python 3.8
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -77,10 +78,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.8"
-      - name: lsltest and the skill templates on the oldest supported Python
+      - name: The Python side on the oldest supported version (no lslint binary: its tests skip)
         run: |
           python --version
-          python -m unittest -v test_lsltest
+          python -m unittest -v test_lslcheck test_lsltest test_update_builtins
+          python lslcheck.py --doc llListen
           python -m lsltest skills/lsl-dev/templates/tests
 
   windows:

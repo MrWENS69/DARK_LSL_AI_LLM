@@ -1,6 +1,5 @@
-"""LSL constants by name, the grid limits and lsltest's own guards.
-
-Every LSL constant comes from builtins.txt through signatures.py: nothing here is a literal of the grid."""
+"""LSL constants by name (from builtins.txt through signatures.py), the grid limits that builtins.txt
+does not carry, and lsltest's own guards, the interpreter's included."""
 
 from .signatures import CONSTANTS
 
@@ -9,7 +8,6 @@ def _consts(*names):
     return tuple(CONSTANTS[n] for n in names)
 
 
-# LSL constants come from builtins.txt through signatures.py: the handlers below name the ones they need.
 EOF, NAK, DEBUG_CHANNEL, PUBLIC_CHANNEL = _consts("EOF", "NAK", "DEBUG_CHANNEL", "PUBLIC_CHANNEL")
 INVENTORY_NOTECARD, INVENTORY_SCRIPT, INVENTORY_OBJECT, INVENTORY_NONE, INVENTORY_ALL = _consts(
     "INVENTORY_NOTECARD", "INVENTORY_SCRIPT", "INVENTORY_OBJECT", "INVENTORY_NONE", "INVENTORY_ALL")
@@ -35,12 +33,6 @@ DATA_ONLINE, DATA_NAME, DATA_BORN, DATA_PAYINFO = _consts("DATA_ONLINE", "DATA_N
                                  "LINKSETDATA_EPROTECTED", "LINKSETDATA_NOTFOUND", "LINKSETDATA_NOUPDATE")
 LINKSETDATA_RESET, LINKSETDATA_UPDATE, LINKSETDATA_DELETE, LINKSETDATA_MULTIDELETE = _consts(
     "LINKSETDATA_RESET", "LINKSETDATA_UPDATE", "LINKSETDATA_DELETE", "LINKSETDATA_MULTIDELETE")
-_CONTENT_TYPES = {CONSTANTS[name]: mime for name, mime in (
-    ("CONTENT_TYPE_TEXT", "text/plain"), ("CONTENT_TYPE_HTML", "text/html"), ("CONTENT_TYPE_XML", "application/xml"),
-    ("CONTENT_TYPE_XHTML", "application/xhtml+xml"), ("CONTENT_TYPE_ATOM", "application/atom+xml"),
-    ("CONTENT_TYPE_JSON", "application/json"), ("CONTENT_TYPE_LLSD", "application/llsd+xml"),
-    ("CONTENT_TYPE_FORM", "application/x-www-form-urlencoded"), ("CONTENT_TYPE_RSS", "application/rss+xml"))
-    if name in CONSTANTS}
 
 # Grid limits that are not LSL constants.
 MAX_LISTENS = 65              # llListen handles per script before "Too Many Listens"
@@ -60,3 +52,9 @@ MAX_RECORDS = 100000          # chat lines, dialogs, requests... of one kind the
 MAX_PATTERN_LEN = 256         # llLinksetDataFindKeys patterns longer than this match nothing...
 MAX_MATCH_LEN = 256           # ...and only the first characters of a key are matched
 MAX_SCRIPT_BYTES = 1048576    # a .lsl file over 1 MB is refused
+MAX_CALL_DEPTH = 150          # the grid dies with "Stack-Heap Collision" long before this
+MAX_QUEUE = 64                # events queued per script; more are dropped silently
+MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping (sim.max_statements)
+MAX_HANDLER_SECONDS = 20.0    # wall-clock time per event handler, for builtins that cost more than a statement
+                              # (sim.max_handler_seconds)
+RECURSION_LIMIT = 2500        # Python frames allowed while a handler runs: enough for MAX_CALL_DEPTH

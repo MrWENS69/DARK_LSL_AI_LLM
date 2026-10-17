@@ -111,7 +111,8 @@ integer mixed with a float goes through single precision, integer division
 truncates, `/` and `%` by zero kill the script with "Math Error", 32-bit
 integer wrap, 64 queued events then silent drops, 65 listens then "Too Many
 Listens" (the same filter again returns the existing handle), about 64 KiB
-of memory for code and globals then "Stack-Heap Collision", `llDialog`
+of memory for code, globals and the locals of the running function then
+"Stack-Heap Collision", `llDialog`
 errors (empty or long message, more than 12 buttons, labels not 1 to 24
 bytes) are shouted on DEBUG_CHANNEL and no dialog shows, chat is cut at 1024
 bytes, hover text at 254, incoming HTTP bodies at 2048 bytes, HTTP responses
@@ -136,10 +137,11 @@ handler counts as the first), a string or list over 65536 items, two million
 statements or 20 seconds in one handler (`sim.max_statements`,
 `sim.max_handler_seconds`), 10000 rounds of scripts posting events to each
 other in one `run()`, 100000 timer or sensor steps in one `tick()`, 100000
-records of one kind (chat lines, requests...). The first three kill the
-script with a `ScriptError`; the `run()` and `tick()` guards raise
-`RuntimeError` in the test: shorten the tick or the timer, or fix the loop.
-Error messages name the script line.
+records of one kind (chat lines, requests...), 120 nested expressions or
+blocks in the parser. The depth, size, statement, time and record guards
+kill the script with a `ScriptError`; the `run()` and `tick()` guards raise
+`RuntimeError` in the test: shorten the tick or the timer, or fix the loop;
+the nesting guard is a syntax error. Error messages name the script line.
 
 What it does not model: physics, movement, chat range (every listener in the
 region hears), rendering, region crossings, avatar animations beyond

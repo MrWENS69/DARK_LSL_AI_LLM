@@ -28,7 +28,7 @@ default
         s = pair(i, i + 1);                                       // reads only: fine
         s = pair(i++, j);                                         // written in one, j in the other: fine
         v = <i, i, i>;                                            // reads only: fine
-        data = [next(), next()];                                  // calls, no direct write: fine (W20024 territory)
+        data = [next(), next()];                                  // calls, no direct write: fine (warning 20024's business)
         s = pair(i++, i);                                         // $[E20025] i written in one argument, read in another
         s = pair(i, (i = 2));                                     // $[E20025] assignment in one argument
         data = [i++, i];                                          // $[E20025] list elements

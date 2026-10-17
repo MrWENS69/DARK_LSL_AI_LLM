@@ -158,9 +158,10 @@ class IntegrationTest(unittest.TestCase):
         # the $[E20024] markers in the corpus suppress the expected warnings (-a is on by default)
         self.assertEqual(code, 0, out)
 
-    def test_sibling_writes_report_w20025(self):
-        code, out = self.run_main("--strict", "-a-" if False else "--strict", os.path.join(HERE, "scripts", "side_effects", "siblings.lsl"))
-        self.assertEqual(code, 0, out)        # marked lines only
+    def test_sibling_writes_corpus_is_clean_under_strict(self):
+        # every W20025 of siblings.lsl is marked, so -s under --strict reports nothing unmarked
+        code, out = self.run_main("--strict", os.path.join(HERE, "scripts", "side_effects", "siblings.lsl"))
+        self.assertEqual(code, 0, out)
 
     def test_json_report_shape(self):
         code, out = self.run_main("--json", os.path.join(HERE, "scripts", "test1.lsl"))

@@ -15,6 +15,25 @@ Logger *Logger::get() {
    return instance;
 }
 
+// Every write into the message buffers stays inside them: a diagnostic that
+// quotes a 2000-character identifier is cut, not written past the array.
+static int vbounded(char *bp, const char *end, const char *fmt, va_list args) {
+   int n;
+   if (bp >= end - 1) return 0;
+   n = vsnprintf(bp, end - bp, fmt, args);
+   if (n < 0 || n >= end - bp) return (int)(end - bp - 1);
+   return n;
+}
+
+static int bounded(char *bp, const char *end, const char *fmt, ...) {
+   va_list args;
+   int n;
+   va_start(args, fmt);
+   n = vbounded(bp, end, fmt, args);
+   va_end(args);
+   return n;
+}
+
 void Logger::log(LogLevel level, YYLTYPE *yylloc, const char *fmt, ...) {
    va_list        args;
    va_start(args, fmt);
@@ -26,6 +45,7 @@ void Logger::error(YYLTYPE *yylloc, ErrorCode error, ...) {
    // FIXME: magic numbers
    static char   buf[1024];
    char         *bp = buf;
+   const char   *end = buf + sizeof(buf);
    const char   *fmt;
    const char   *fp;
    bool          seen_before;
@@ -43,7 +63,7 @@ void Logger::error(YYLTYPE *yylloc, ErrorCode error, ...) {
    if ( check_assertions == ALL_ASSERTIONS ) {
       // if we're checking all assertions, messages will be removed by matching
       // assertions, so we just add "Unexpected" to all of them.
-      bp += sprintf(bp, level == LOG_ERROR ? "Unexpected error: " : "Unexpected warning: ");
+      bp += bounded(bp, end, level == LOG_ERROR ? "Unexpected error: " : "Unexpected warning: ");
 
       // upgrade everything to error
       level = LOG_ERROR;
@@ -61,7 +81,7 @@ void Logger::error(YYLTYPE *yylloc, ErrorCode error, ...) {
 
 
    if ( show_error_codes ) {
-      bp += sprintf(bp, "[E%d] ", (int)error );
+      bp += bounded(bp, end, "[E%d] ", (int)error );
    }
 
    for ( fp = fmt ; *fp ; ++fp ) {
@@ -83,7 +103,7 @@ void Logger::error(YYLTYPE *yylloc, ErrorCode error, ...) {
          for ( ++fp; *fp; ++fp ) {
             if ( *fp == '\n' )
                break;
-            else
+            else if ( bp < end - 1 )
                *bp++ = *fp;
          }
          *bp = 0;
@@ -97,6 +117,7 @@ void Logger::logv(LogLevel level, YYLTYPE *yylloc, const char *fmt, va_list args
    const char    *type           = NULL;
    static char    buf[1024];
    char          *bp             = buf;
+   const char    *end            = buf + sizeof(buf);
    switch (level) {
       case LOG_ERROR:
          type = "ERROR";
@@ -121,7 +142,7 @@ void Logger::logv(LogLevel level, YYLTYPE *yylloc, const char *fmt, va_list args
 #endif /* not DEBUG_LEVEL */
          break;
       case LOG_CONTINUE:
-         vsprintf( bp, fmt, args );
+         vbounded( bp, end, fmt, args );
          if ( last_message )
             last_message->cont( buf );
 
@@ -134,16 +155,16 @@ void Logger::logv(LogLevel level, YYLTYPE *yylloc, const char *fmt, va_list args
 
    if (file_path != NULL)
    {
-      bp += sprintf(bp, "%s::", file_path);
+      bp += bounded(bp, end, "%s::", file_path);
    }
-   bp += sprintf(bp, "%5s:: ", type );
+   bp += bounded(bp, end, "%5s:: ", type );
    if ( yylloc != NULL ) {
-      bp += sprintf(bp, "(%3d,%3d)", yylloc->first_line, yylloc->first_column);
+      bp += bounded(bp, end, "(%3d,%3d)", yylloc->first_line, yylloc->first_column);
       if ( show_end )
-         bp += sprintf(bp, "-(%3d,%3d)", yylloc->last_line, yylloc->last_column);
-      bp += sprintf(bp, ": ");
+         bp += bounded(bp, end, "-(%3d,%3d)", yylloc->last_line, yylloc->last_column);
+      bp += bounded(bp, end, ": ");
    }
-   bp += vsprintf(bp, fmt, args);
+   bp += vbounded(bp, end, fmt, args);
 
    last_message = new LogMessage( level, yylloc, buf, error );
    //  fprintf(stderr, "%p\n", last_message);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh builtins.txt from secondlife/lsl-definitions and regenerate builtins_txt.cc.
+"""Refresh builtins.txt, builtins_txt.cc and lsltest/data/lsl_doc.json from secondlife/lsl-definitions.
 
 Linden Lab publishes the canonical LSL definitions at
 https://github.com/secondlife/lsl-definitions and already renders them in the
@@ -13,7 +13,8 @@ Usage:
     python update_builtins.py --from-file path/to/builtins.txt --yaml-file path/to/lsl_definitions.yaml   # offline
 
 The same run reads lsl_definitions.yaml (tooltips, parameters, delays) and
-writes lsltest/data/lsl_doc.json, the reference behind `lslcheck --doc`.
+writes lsltest/data/lsl_doc.json, the reference behind `lslcheck --doc`;
+with --from-file and no --yaml-file that file is left as it is.
 
 Requires Python 3.8+, standard library only.
 """
@@ -41,14 +42,32 @@ VERSION_TXT = ROOT / "builtins_version.txt"
 SAFE_LINE = re.compile(r"[\x15\x20-\x7e\ufdd0-\ufdef]{1,1000}")  # \x15: the NAK constant
 
 
+MAX_DOWNLOAD = 5000000
+
+
+class _TokenStaysHome(urllib.request.HTTPRedirectHandler):
+    """A redirect to another host does not carry the GitHub token along."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_TokenStaysHome())
+
+
 def fetch(url):
     headers = {"User-Agent": "lslint-update-builtins"}
     token = os.environ.get("GITHUB_TOKEN")
     if token and url.startswith("https://api.github.com/"):
         headers["Authorization"] = "Bearer " + token          # 5000 requests an hour instead of 60
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read(5000000)
+    with _OPENER.open(urllib.request.Request(url, headers=headers), timeout=60) as resp:
+        data = resp.read(MAX_DOWNLOAD + 1)
+    if len(data) > MAX_DOWNLOAD:
+        raise ValueError("download over %d bytes: %s" % (MAX_DOWNLOAD, url))
+    return data
 
 
 def check_line(line):
@@ -121,81 +140,76 @@ def report(old_text, new_text):
 #
 # The YAML file is regular: two-space indents, one scalar per line, block or
 # quoted scalars for the long tooltips. The reader below covers exactly that
-# subset (the standard library has no YAML parser), and the result is checked
-# against builtins.txt: every function and event of the linter must have its
-# documentation, or the refresh fails.
+# subset (the standard library has no YAML parser) and raises ValueError on
+# anything else, so that the daily refresh fails loudly instead of writing a
+# wrong reference. The result is then checked against builtins.txt.
 
 DOC_JSON = ROOT / "lsltest" / "data" / "lsl_doc.json"
 DOC_SECTIONS = ("constants", "events", "functions")
+_QUOTED = {"'": re.compile(r"'(?:[^']|'')*'(\s+#.*)?"), '"': re.compile(r'"(?:[^"\\]|\\.)*"(\s+#.*)?')}
+_FORBIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
 
 
 def _content_lines(text):
-    """(indent, text) per line; blank and comment lines keep indent None and their raw text."""
+    """(indent, text, is_content) per line; blank and comment lines are not content but keep their indent."""
     out = []
     for raw in text.splitlines():
         stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            out.append((None, raw))
-        else:
-            out.append((len(raw) - len(raw.lstrip(" ")), stripped))
+        out.append((len(raw) - len(raw.lstrip(" ")), stripped, bool(stripped) and not stripped.startswith("#")))
     return out
 
 
 def _next_content(lines, i):
-    while i < len(lines) and lines[i][0] is None:
+    while i < len(lines) and not lines[i][2]:
         i += 1
     return i
 
 
+def _gather(lines, i, rest, done):
+    """Join line i's `rest` with the following lines until done(text) says the scalar is closed."""
+    parts, j = [rest], i
+    while not done(" ".join(parts)):
+        j += 1
+        if j >= len(lines):
+            raise ValueError("unterminated scalar at line %d: %r" % (i + 1, rest))
+        parts.append(lines[j][1])
+    return " ".join(p.strip() for p in parts), j + 1
+
+
+def _plain(text):
+    return re.sub(r"\s+#.*$", "", text).strip()           # drops a trailing comment
+
+
 def _scalar(lines, i, indent, rest):
     """The scalar that starts with `rest` on line i (whose key sits at `indent`); returns (value, next_i)."""
-    if rest.startswith("["):
-        # a flow sequence, [A, B] or spread over lines, possibly followed by a comment
-        parts, j = [rest], i
-        while "]" not in " ".join(parts):
-            j += 1
-            parts.append(lines[j][1] if lines[j][0] is not None else "")
-        text = " ".join(p.strip() for p in parts)
+    if rest.startswith("["):                            # flow sequence, inline or spread over lines
+        text, j = _gather(lines, i, rest, lambda t: "]" in t)
         inner = text[text.index("[") + 1:text.rindex("]")]
-        return [s.strip().strip("'\"") for s in inner.split(",") if s.strip()], j + 1
-    if rest in ("|", "|-", ">", ">-", "|+", ">+"):
+        return [s.strip().strip("'\"") for s in inner.split(",") if s.strip()], j
+    if rest[0] in _QUOTED:
+        text, j = _gather(lines, i, rest, lambda t: _QUOTED[rest[0]].fullmatch(t) is not None)
+        body = text[1:text.rindex(rest[0])]
+        if rest[0] == "'":
+            return body.replace("''", "'"), j
+        try:
+            return json.loads('"' + body + '"'), j
+        except ValueError:
+            raise ValueError("unsupported escape in a double-quoted scalar at line %d" % (i + 1))
+    if re.fullmatch(r"[|>]-?", rest):                   # block scalar: literal or folded, kept or clipped
         block, j = [], i + 1
-        while j < len(lines) and (lines[j][0] is None or lines[j][0] > indent):
-            block.append(lines[j][1] if lines[j][0] is None else lines[j][1])
+        while j < len(lines) and (not lines[j][1] or lines[j][0] > indent):
+            block.append(lines[j][1])
             j += 1
-        raw = [l for l in block]
-        if rest.startswith("|"):
-            value = "\n".join(s.strip() for s in raw).strip("\n")
-        else:
-            value = " ".join(s.strip() for s in raw if s.strip())
-        return value, j
-    if rest.startswith("'") or rest.startswith('"'):
-        quote = rest[0]
-        parts, j = [rest], i
-        while not _closed(parts, quote):
-            j += 1
-            parts.append(lines[j][1] if lines[j][0] is not None else "")
-        text = " ".join(p.strip() for p in parts)
-        body = text[1:-1]
-        if quote == "'":
-            body = body.replace("''", "'")
-        else:
-            body = body.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
-        return body, j + 1
-    parts, j = [rest], i + 1
-    while j < len(lines) and lines[j][0] is not None and lines[j][0] > indent:
-        parts.append(lines[j][1])
+        if rest[0] == "|":
+            return "\n".join(block).strip("\n"), j
+        return " ".join(b for b in block if b), j
+    if rest[0] in "|>&*!{%@`":
+        raise ValueError("unsupported YAML syntax at line %d: %r" % (i + 1, rest))
+    parts, j = [_plain(rest)], i + 1                      # plain scalar, folded over its continuation lines
+    while j < len(lines) and lines[j][2] and lines[j][0] > indent:
+        parts.append(_plain(lines[j][1]))
         j += 1
     return " ".join(parts), j
-
-
-def _closed(parts, quote):
-    text = " ".join(parts)
-    if len(text) < 2 or not text.endswith(quote):
-        return False
-    if quote == "'":
-        return not text.endswith("''") or text == "''"
-    return not text.endswith('\\"')
 
 
 def _parse_block(lines, i, indent):
@@ -215,22 +229,20 @@ def _parse_mapping(lines, i, indent):
         if i >= len(lines) or lines[i][0] != indent or lines[i][1].startswith("- "):
             return result, i
         key, sep, rest = lines[i][1].partition(":")
-        if not sep or (rest and not rest.startswith(" ")):
+        key = key.strip().strip("'\"")                        # 'TRUE' and 'FALSE' are quoted keys
+        if not sep or (rest and not rest.startswith(" ")) or " " in key:
             raise ValueError("unexpected YAML line %d: %r" % (i + 1, lines[i][1]))
         rest = rest.strip()
-        if rest == "":
-            j = _next_content(lines, i + 1)
-            if j < len(lines) and lines[j][0] is not None and lines[j][0] > indent and lines[j][1].startswith("["):
-                result[key], i = _scalar(lines, j, indent, lines[j][1])      # a flow sequence on its own lines
-            elif j < len(lines) and lines[j][0] is not None and (
-                    lines[j][0] > indent or (lines[j][0] == indent and lines[j][1].startswith("- "))):
-                result[key], i = _parse_block(lines, j, lines[j][0])
-            else:
-                result[key], i = "", i + 1
-        elif rest == "[]":
-            result[key], i = [], i + 1
-        else:
+        if rest:
             result[key], i = _scalar(lines, i, indent, rest)
+            continue
+        j = _next_content(lines, i + 1)
+        if j < len(lines) and lines[j][0] > indent and lines[j][1].startswith("["):
+            result[key], i = _scalar(lines, j, indent, lines[j][1])     # a flow sequence on its own lines
+        elif j < len(lines) and (lines[j][0] > indent or (lines[j][0] == indent and lines[j][1].startswith("- "))):
+            result[key], i = _parse_block(lines, j, lines[j][0])
+        else:
+            result[key], i = "", i + 1
 
 
 def _parse_list(lines, i, indent):
@@ -239,11 +251,12 @@ def _parse_list(lines, i, indent):
         i = _next_content(lines, i)
         if i >= len(lines) or lines[i][0] != indent or not (lines[i][1].startswith("- ") or lines[i][1] == "-"):
             return result, i
-        rest = lines[i][1][2:].strip()
-        if rest and ":" in rest and (rest.endswith(":") or ": " in rest):
-            # a mapping whose first key sits on the dash line, the others two columns in
-            lines[i] = (indent + 2, rest)
-            item, i = _parse_mapping(lines, i, indent + 2)
+        text = lines[i][1]
+        rest = text[1:].lstrip()
+        item_indent = indent + len(text) - len(rest)           # where the item's first key sits
+        if _plain(rest).endswith(":") or ": " in _plain(rest):
+            lines[i] = (item_indent, rest, True)                 # the first key is on the dash line
+            item, i = _parse_mapping(lines, i, item_indent)
             result.append(item)
         elif rest:
             value, i = _scalar(lines, i, indent, rest)
@@ -259,7 +272,7 @@ def read_definitions(text):
     found = {}
     i = 0
     while i < len(lines):
-        if lines[i][0] == 0 and lines[i][1].rstrip(":") in DOC_SECTIONS and lines[i][1].endswith(":"):
+        if lines[i][0] == 0 and lines[i][2] and lines[i][1].endswith(":") and lines[i][1][:-1] in DOC_SECTIONS:
             name = lines[i][1][:-1]
             found[name], i = _parse_block(lines, i + 1, 2)
         else:
@@ -271,60 +284,94 @@ def read_definitions(text):
 
 
 def _flag(value):
-    return bool(value) and value != "false"
+    """true / false / absent, or a mapping such as deprecated: {use: X} which counts as true."""
+    if isinstance(value, dict):
+        return True
+    if value in ("true", "false", ""):
+        return value == "true"
+    raise ValueError("unexpected flag value %r" % (value,))
 
 
-def _number(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+def _text(where, value):
+    if not isinstance(value, str):
+        raise ValueError("%s: expected text, got %r" % (where, value))
+    if _FORBIDDEN.search(value):
+        raise ValueError("%s: control or direction character in the text" % where)
+    return value
 
 
-def _arguments(entry):
+def _types(signature):
+    """Parameter types of a builtins.txt signature, quaternion spelled rotation."""
+    return [p.split()[0].replace("quaternion", "rotation") for p in signature.split(",") if p.strip()]
+
+
+def _arguments(where, entry):
     out = []
     for arg in entry.get("arguments") or []:
-        if isinstance(arg, dict) and arg:
-            name, spec = next(iter(arg.items()))
-            spec = spec if isinstance(spec, dict) else {}
-            out.append([name, spec.get("type", ""), spec.get("tooltip", "")])
+        if not isinstance(arg, dict) or len(arg) != 1:
+            raise ValueError("%s: unexpected argument entry %r" % (where, arg))
+        name, spec = next(iter(arg.items()))
+        spec = spec if isinstance(spec, dict) else {}
+        out.append([name, _text(where, spec.get("type", "")), _text(where, spec.get("tooltip", ""))])
     return out
 
 
-def build_doc(defs, functions, events, constants, source):
-    """The compact reference shipped as lsl_doc.json, checked against builtins.txt."""
-    doc = {"source": source, "functions": {}, "events": {}, "constants": {}}
+def build_doc(defs, functions, events, constants):
+    """The reference shipped as lsl_doc.json, checked entry by entry against builtins.txt."""
+    doc = {"source": REPO, "functions": {}, "events": {}, "constants": {}}
     for name, entry in defs["functions"].items():
         if not isinstance(entry, dict):
-            continue
-        item = {"return": entry.get("return", "void"), "args": _arguments(entry), "tooltip": entry.get("tooltip", ""),
-                "sleep": _number(entry.get("sleep")), "energy": _number(entry.get("energy"), 10.0)}
+            raise ValueError("function %s: not a mapping" % name)
+        item = {"return": _text(name, entry.get("return", "")).replace("quaternion", "rotation"),
+                "args": _arguments(name, entry), "tooltip": _text(name, entry.get("tooltip", "")),
+                "sleep": float(entry.get("sleep", "x")), "energy": float(entry.get("energy", "x"))}
         for flag in ("deprecated", "pure", "god-mode", "experience"):
-            if _flag(entry.get(flag)):
+            if _flag(entry.get(flag, "")):
                 item[flag] = True
         if entry.get("requires-permission"):
-            item["requires-permission"] = entry["requires-permission"]
+            item["requires-permission"] = list(entry["requires-permission"])
+        if name in functions:
+            ret, params = functions[name]
+            if item["return"] != ret.replace("quaternion", "rotation") or [a[1] for a in item["args"]] != _types(params):
+                raise ValueError("function %s: the YAML signature differs from builtins.txt" % name)
         doc["functions"][name] = item
     for name, entry in defs["events"].items():
-        if isinstance(entry, dict):
-            doc["events"][name] = {"args": _arguments(entry), "tooltip": entry.get("tooltip", "")}
+        if not isinstance(entry, dict):
+            raise ValueError("event %s: not a mapping" % name)
+        doc["events"][name] = {"args": _arguments(name, entry), "tooltip": _text(name, entry.get("tooltip", ""))}
+        if name in events and [a[1] for a in doc["events"][name]["args"]] != _types(events[name]):
+            raise ValueError("event %s: the YAML signature differs from builtins.txt" % name)
     for name, entry in defs["constants"].items():
         if not isinstance(entry, dict):
-            continue
-        item = {"type": entry.get("type", ""), "value": str(entry.get("value", "")), "tooltip": entry.get("tooltip", "")}
-        if _flag(entry.get("deprecated")):
+            raise ValueError("constant %s: not a mapping" % name)
+        item = {"type": _text(name, entry.get("type", "")), "value": _text(name, str(entry.get("value", ""))),
+                "tooltip": _text(name, entry.get("tooltip", ""))}
+        if _flag(entry.get("deprecated", "")):
             item["deprecated"] = True
             if isinstance(entry["deprecated"], dict) and entry["deprecated"].get("use"):
-                item["use"] = entry["deprecated"]["use"]
+                item["use"] = _text(name, entry["deprecated"]["use"])
         doc["constants"][name] = item
-    for label, names, section in (("functions", functions, "functions"), ("events", events, "events")):
+    for label, names, section in (("functions", functions, "functions"), ("events", events, "events"),
+                                  ("constants", constants, "constants")):
         undocumented = sorted(set(names) - set(doc[section]))
         if undocumented:
-            raise ValueError("%s of builtins.txt without documentation: %s" % (label, ", ".join(undocumented)))
-    undocumented = sorted(set(constants) - set(doc["constants"]))
-    if undocumented:
-        print("constants of builtins.txt without a tooltip in the YAML: %s" % ", ".join(undocumented))
+            raise ValueError("%s of builtins.txt without an entry in lsl_definitions.yaml: %s"
+                             % (label, ", ".join(undocumented)))
     return doc
+
+
+def write_doc(doc, path):
+    """One entry per line, so that the daily pull request shows what changed."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("{\n")
+        for section in DOC_SECTIONS:
+            handle.write('"%s": {\n' % section)
+            names = sorted(doc[section])
+            for k, name in enumerate(names):
+                entry = json.dumps(doc[section][name], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                handle.write("%s: %s%s\n" % (json.dumps(name), entry, "," if k + 1 < len(names) else ""))
+            handle.write("},\n")
+        handle.write('"source": %s\n}\n' % json.dumps(doc["source"]))
 
 
 def main():
@@ -363,7 +410,7 @@ def main():
     body = "\n".join(l for l in text.splitlines() if l.strip() and not l.startswith("//"))
     new_text = "// Generated from %s by update_builtins.py\n%s\n" % (stamp, body)
     functions, events, constants = parse(new_text)  # validate before writing anything
-    doc = build_doc(read_definitions(yaml_text), functions, events, constants, stamp) if yaml_text else None
+    doc = build_doc(read_definitions(yaml_text), functions, events, constants) if yaml_text else None
 
     old_text = BUILTINS_TXT.read_text(encoding="utf-8") if BUILTINS_TXT.exists() else ""
     report(old_text, new_text)
@@ -372,17 +419,17 @@ def main():
     BUILTINS_CC.write_text(render_cc(new_text), encoding="utf-8", newline="\n")
     VERSION_TXT.write_text(version_body, encoding="utf-8", newline="\n")
     bundled = ROOT / "lsltest" / "data" / "builtins.txt"      # the copy shipped inside the lsltest package
+    written = [BUILTINS_TXT.name, BUILTINS_CC.name, VERSION_TXT.name]
     if bundled.parent.is_dir():
         bundled.write_text(new_text, encoding="utf-8", newline="\n")
+        written.append("lsltest/data/builtins.txt")
     if doc is not None:
-        with open(DOC_JSON, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(doc, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-            handle.write("\n")
-        print("wrote %s (%d functions, %d events, %d constants)" % (DOC_JSON.name, len(doc["functions"]),
-                                                                    len(doc["events"]), len(doc["constants"])))
+        write_doc(doc, DOC_JSON)
+        written.append("lsltest/data/lsl_doc.json (%d functions, %d events, %d constants)"
+                       % (len(doc["functions"]), len(doc["events"]), len(doc["constants"])))
     else:
-        print("no lsl_definitions.yaml given: %s not refreshed" % DOC_JSON.name)
-    print("wrote %s, %s, %s" % (BUILTINS_TXT.name, BUILTINS_CC.name, VERSION_TXT.name))
+        print("no lsl_definitions.yaml given: lsltest/data/lsl_doc.json left as it is")
+    print("wrote " + ", ".join(written))
     return 0
 
 

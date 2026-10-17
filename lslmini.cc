@@ -124,7 +124,7 @@ void LLASTNode::add_children( int num, va_list ap ) {
 void LLASTNode::walk() {
    LLASTNode *child = children;
    char buf[256];
-   sprintf(buf, "%s [%s] (cv=%s) (%d,%d)", get_node_name(), type ? type->get_node_name() : NULL, constant_value ? constant_value->get_node_name() : NULL, lloc.first_line, lloc.first_column );
+   snprintf(buf, sizeof(buf), "%s [%s] (cv=%s) (%d,%d)", get_node_name(), type ? type->get_node_name() : NULL, constant_value ? constant_value->get_node_name() : NULL, lloc.first_line, lloc.first_column );
    print_walk(buf);
    //print_walk(get_node_name());
    if ( child == NULL ) return;
@@ -978,7 +978,9 @@ void usage(const char *name) {
    printf("\t-a\t\tFlag: Don't report marked warnings/errors (default on)\n");
    printf("\t-i\t\tFlag: Ignore preprocessor directives (default off)\n");
    printf("\t-u\t\tFlag: Warn about unused event parameters (default off)\n");
-   printf("\t-s\t\tFlag: Warn about calls, assignments, ++/-- and divisions in && / || operands (default off)\n");
+   printf("\t-s\t\tFlag: Warn about calls, assignments, ++/-- and divisions in && / || operands,\n"
+          "\t\t\t   and about a variable written in one function argument, list element or\n"
+          "\t\t\t   vector component and used in another (default off)\n");
    printf("\t-w\t\tFlag: Enable switch statements (default off)\n");
    printf("\t-z\t\tFlag: Enable lazy list syntax (default off)\n");
    printf("\t-G\t\tFlag: Enable god mode (default off)\n");

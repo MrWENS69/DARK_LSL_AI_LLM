@@ -1,17 +1,27 @@
-"""Timers, the clock and script control: llSetTimerEvent, llSleep, llGetTime, llResetScript, memory. Mixed into Simulator."""
+"""Timers, the clock, script control and memory: llSetTimerEvent, llSleep, llGetTime, llGetWallclock, llResetScript, llGetFreeMemory. Mixed into Simulator."""
 
+import datetime
 import time as _time
 
 from .errors import ResetSignal
 from .limits import MAX_SLEEP, MIN_TIMER
 from .values import f32, to_int32
-from .world import _slt_offset
+
+
+def slt_offset(unix):
+    """Seconds to add to UTC for Second Life Time: Pacific time with the US daylight saving rule."""
+    try:
+        utc = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=unix)
+    except (OverflowError, ValueError):             # the clock was pushed past the year 9999
+        return -8 * 3600
+    march = datetime.date(utc.year, 3, 8)
+    start = datetime.datetime.combine(march + datetime.timedelta((6 - march.weekday()) % 7), datetime.time(10))
+    november = datetime.date(utc.year, 11, 1)
+    end = datetime.datetime.combine(november + datetime.timedelta((6 - november.weekday()) % 7), datetime.time(9))
+    return -7 * 3600 if start <= utc < end else -8 * 3600   # 2:00 PST and 2:00 PDT, in UTC
 
 
 class TimeMixin(object):
-    """Timers, the clock and script control: llSetTimerEvent, llSleep, llGetTime, llResetScript, memory."""
-
-    # --- timers and time ---------------------------------------------------
 
     def ll_SetTimerEvent(self, script, seconds):
         if not seconds > 0.0:                 # also NaN
@@ -49,15 +59,13 @@ class TimeMixin(object):
         return _time.strftime("%Y-%m-%dT%H:%M:%S", self._utc()) + ".%06dZ" % int((self.time % 1) * 1e6)
 
     def ll_GetWallclock(self, script):
-        return f32(int((self.epoch + self.time + _slt_offset(self.epoch + self.time)) % 86400))
+        return f32(int((self.epoch + self.time + slt_offset(self.epoch + self.time)) % 86400))
 
     def ll_GetGMTclock(self, script):
         return f32((self.epoch + self.time) % 86400)
 
     def ll_GetDate(self, script):
         return _time.strftime("%Y-%m-%d", self._utc())
-
-    # --- script control ----------------------------------------------------
 
     def ll_ResetScript(self, script):
         raise ResetSignal()

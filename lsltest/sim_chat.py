@@ -1,21 +1,41 @@
-"""Chat, listens and dialogs: llSay and friends, llListen, llDialog, llTextBox. Mixed into Simulator."""
+"""Chat, listens and dialogs: llSay and friends, llListen, llDialog, llTextBox, and the delivery of chat to listeners. Mixed into Simulator."""
 
 from types import SimpleNamespace
 
 from .errors import ScriptError
-from .limits import MAX_LISTENS, PUBLIC_CHANNEL
+from .limits import DEBUG_CHANNEL, MAX_LISTENS, PUBLIC_CHANNEL
 from .values import Key, type_of, NULL_KEY, is_valid_key
-from .world import Chat, _clip
+from .world import Chat, clip_text
 
 
 class ChatMixin(object):
-    """Chat, listens and dialogs: llSay and friends, llListen, llDialog, llTextBox."""
 
-    # --- chat ----------------------------------------------------------------
+    def deliver_chat(self, channel, speaker_key, speaker_name, text, source_obj, target):
+        for script in self.all_scripts():
+            if source_obj is not None and script.obj is source_obj:
+                continue                      # an object never hears itself
+            if target is not None and script.obj.key != target and (
+                    script.obj.wearer is None or script.obj.wearer.key != target):
+                continue                      # llRegionSayTo: the target object, or the target avatar's attachments
+            for listen in script.listens.values():
+                if not listen.active or listen.channel != channel:
+                    continue
+                if listen.name and listen.name != speaker_name:
+                    continue
+                if listen.id and listen.id != speaker_key:
+                    continue
+                if listen.msg and listen.msg != text:
+                    continue
+                script.post("listen", [channel, speaker_name, Key(speaker_key), text])
+                break
+
+    def _debug(self, script, text):
+        """What the grid shouts on DEBUG_CHANNEL; visible in sim.chat with kind "debug"."""
+        self._keep(self.chat, Chat(DEBUG_CHANNEL, script.obj.key, script.obj.name, text, "debug", None, self.time))
 
     def _speak(self, script, channel, text, kind, target=None):
         obj = script.obj
-        text = _clip(text, 1024)
+        text = clip_text(text, 1024)
         self._keep(self.chat, Chat(channel, obj.key, obj.name, text, kind, target, self.time))
         if kind == "ownersay" or (kind == "regionsayto" and channel == PUBLIC_CHANNEL):
             return
@@ -42,15 +62,13 @@ class ChatMixin(object):
         self._speak(script, PUBLIC_CHANNEL, text, "ownersay")
 
     def ll_InstantMessage(self, script, user, text):
-        self._keep(self.chat, Chat(PUBLIC_CHANNEL, script.obj.key, script.obj.name, _clip(text, 1023), "im",
+        self._keep(self.chat, Chat(PUBLIC_CHANNEL, script.obj.key, script.obj.name, clip_text(text, 1023), "im",
                                    Key(user), self.time))
         self.time += 2.0
 
     def ll_Email(self, script, address, subject, message):
         self._keep(self.emails, SimpleNamespace(to=address, subject=subject, body=message, object=script.obj.key))
         self.time += 20.0
-
-    # --- listens ---------------------------------------------------------------
 
     def ll_Listen(self, script, channel, name, id_, msg):
         wanted = (channel, name, id_ if is_valid_key(id_) and id_ != NULL_KEY else "", msg)
@@ -70,8 +88,6 @@ class ChatMixin(object):
     def ll_ListenControl(self, script, handle, active):
         if handle in script.listens:
             script.listens[handle].active = bool(active)
-
-    # --- dialogs -------------------------------------------------------------
 
     def ll_Dialog(self, script, avatar, message, buttons, channel):
         # every llDialog error is shouted on DEBUG_CHANNEL and no dialog is shown; the script goes on (wiki)
