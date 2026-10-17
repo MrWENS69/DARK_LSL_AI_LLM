@@ -982,7 +982,7 @@ void usage(const char *name) {
    printf("\t-w\t\tFlag: Enable switch statements (default off)\n");
    printf("\t-z\t\tFlag: Enable lazy list syntax (default off)\n");
    printf("\t-G\t\tFlag: Enable god mode (default off)\n");
-   printf("\t-F\t\tFlag: Allow a user function to override a builtin (default off)\n");
+   printf("\t-F\t\tFlag: Allow a later definition of a user function to replace an earlier one (default off)\n");
 #ifdef COMPILE_ENABLED
    printf("\t-c\t\tFlag: Compile (default off)\n");
 #endif /* COMPILE_ENABLED */

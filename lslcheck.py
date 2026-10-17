@@ -57,7 +57,7 @@ PASSTHROUGH = [
     ("-i", "--ignore-preproc", "ignore preprocessor directives"),
     ("-u", "--unused-params", "warn about unused event parameters"),
     ("-G", "--god-mode", "enable god mode"),
-    ("-F", "--function-override", "allow overriding builtin functions"),
+    ("-F", "--function-override", "let a later definition of a user function replace an earlier one"),
 ]
 
 

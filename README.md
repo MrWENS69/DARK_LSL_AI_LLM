@@ -144,7 +144,7 @@ lslcheck [options] PATH...        files, or directories scanned for *.lsl
   --no-download     never fetch the binary (also: LSLCHECK_NO_DOWNLOAD=1)
   -w -z -i -u -G -F forwarded to lslint (switch, lazy lists, ignore
                     preprocessor, unused event parameters, god mode,
-                    builtin override)
+                    later user function definitions replace earlier ones)
 ```
 
 Exit codes: 0 clean, 1 at least one error (or a warning with `--strict`),
@@ -222,7 +222,7 @@ Actions job does the same and opens a pull request.
 -w          Enable switch statements
 -z          Enable lazy list syntax
 -G          Enable god mode
--F          Allow a user function to override a builtin
+-F          Allow a later definition of a user function to replace an earlier one
 -V          Long version info
 --version   Short version info
 --help      This list
