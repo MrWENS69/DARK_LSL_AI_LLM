@@ -22,7 +22,7 @@ personal data, credentials, or anything that belongs to a private project.
 | `test.sh` | Runs the corpus with `-A` assertion checking. |
 | `skills/lsl-dev/` | Installable skill for Claude Code, readable by any assistant. `references/` holds the LSL facts and the error code table. |
 | `gen_error_codes.py` | Regenerates `skills/lsl-dev/references/error-codes.md` from the logger tables. |
-| `.github/workflows/` | CI on Linux, macOS and Windows; daily builtins refresh (opens a pull request); releases on tags; issues to the project board. |
+| `.github/workflows/` | CI on Linux, macOS and Windows; daily builtins refresh (opens a pull request); releases on tags. |
 
 ## Build and test
 
