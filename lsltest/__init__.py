@@ -8,14 +8,16 @@ permissions so that an assistant can assert on what a script did.
 
 Public API:
     from lsltest import Simulator, LslTestCase, Script, ScriptError, LslSyntaxError, UnsupportedError
-Records returned by the simulator and the assertions: Chat and HttpOut (sim.py),
-and SimpleNamespace objects for dialogs, textboxes, listens and link messages.
+Records the simulator hands back: Chat, HttpOutRequest, Avatar and SimObject
+(classes below), and SimpleNamespace objects for dialogs, textboxes, listens,
+link messages and emails (attributes listed in skills/lsl-dev/references/testing.md).
 """
 
 from ._version import __version__
 from .errors import LslSyntaxError, ScriptError, UnsupportedError
 from .interp import Script
-from .sim import Simulator
+from .sim import Avatar, Chat, HttpOutRequest, SimObject, Simulator
 from .testing import LslTestCase
 
-__all__ = ["Simulator", "LslTestCase", "Script", "ScriptError", "LslSyntaxError", "UnsupportedError", "__version__"]
+__all__ = ["Simulator", "LslTestCase", "Script", "ScriptError", "LslSyntaxError", "UnsupportedError",
+           "Chat", "HttpOutRequest", "Avatar", "SimObject", "__version__"]

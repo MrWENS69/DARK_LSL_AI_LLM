@@ -16,24 +16,43 @@ from types import SimpleNamespace
 
 from . import pure
 from ._version import __version__
-from .errors import ScriptError, UnsupportedError
+from .errors import LslSyntaxError, ResetSignal, ScriptError, UnsupportedError
 from .interp import Script
 from .signatures import CONSTANTS, SIGNATURES
-from .values import (Key, Vector, Rotation, f32, coerce, default_value, to_string, to_int32,
+from .values import (Key, Vector, f32, check_size, coerce, default_value, to_string, to_int32, type_of,
                      ZERO_VECTOR, ZERO_ROTATION, NULL_KEY, is_valid_key)
 
+
+def _consts(*names):
+    return tuple(CONSTANTS[n] for n in names)
+
+
 # LSL constants come from builtins.txt through signatures.py: the handlers below name the ones they need.
-EOF = CONSTANTS["EOF"]
-NAK = CONSTANTS["NAK"]
-INVENTORY_NOTECARD = CONSTANTS["INVENTORY_NOTECARD"]
-INVENTORY_SCRIPT = CONSTANTS["INVENTORY_SCRIPT"]
-INVENTORY_OBJECT = CONSTANTS["INVENTORY_OBJECT"]
-INVENTORY_NONE = CONSTANTS["INVENTORY_NONE"]
-URL_REQUEST_GRANTED = CONSTANTS["URL_REQUEST_GRANTED"]
-HTTP_METHOD = CONSTANTS["HTTP_METHOD"]
-AGENT, ACTIVE, PASSIVE, SCRIPTED = (CONSTANTS[n] for n in ("AGENT", "ACTIVE", "PASSIVE", "SCRIPTED"))
-LINK_SET, LINK_ALL_OTHERS, LINK_ALL_CHILDREN, LINK_THIS = (
-    CONSTANTS[n] for n in ("LINK_SET", "LINK_ALL_OTHERS", "LINK_ALL_CHILDREN", "LINK_THIS"))
+EOF, NAK, DEBUG_CHANNEL, PUBLIC_CHANNEL = _consts("EOF", "NAK", "DEBUG_CHANNEL", "PUBLIC_CHANNEL")
+INVENTORY_NOTECARD, INVENTORY_SCRIPT, INVENTORY_OBJECT, INVENTORY_NONE, INVENTORY_ALL = _consts(
+    "INVENTORY_NOTECARD", "INVENTORY_SCRIPT", "INVENTORY_OBJECT", "INVENTORY_NONE", "INVENTORY_ALL")
+URL_REQUEST_GRANTED, URL_REQUEST_DENIED = _consts("URL_REQUEST_GRANTED", "URL_REQUEST_DENIED")
+HTTP_METHOD, HTTP_CUSTOM_HEADER, HTTP_BODY_MAXLENGTH, HTTP_BODY_TRUNCATED = _consts(
+    "HTTP_METHOD", "HTTP_CUSTOM_HEADER", "HTTP_BODY_MAXLENGTH", "HTTP_BODY_TRUNCATED")
+AGENT, ACTIVE, PASSIVE, SCRIPTED = _consts("AGENT", "ACTIVE", "PASSIVE", "SCRIPTED")
+LINK_SET, LINK_ALL_OTHERS, LINK_ALL_CHILDREN, LINK_THIS = _consts(
+    "LINK_SET", "LINK_ALL_OTHERS", "LINK_ALL_CHILDREN", "LINK_THIS")
+CHANGED_REGION, CHANGED_REGION_START = _consts("CHANGED_REGION", "CHANGED_REGION_START")
+(OBJECT_NAME, OBJECT_DESC, OBJECT_POS, OBJECT_ROT, OBJECT_VELOCITY, OBJECT_OWNER, OBJECT_GROUP, OBJECT_CREATOR,
+ OBJECT_ROOT, OBJECT_PRIM_COUNT, OBJECT_TOTAL_SCRIPT_COUNT, OBJECT_RUNNING_SCRIPT_COUNT,
+ OBJECT_ATTACHED_POINT) = _consts(
+    "OBJECT_NAME", "OBJECT_DESC", "OBJECT_POS", "OBJECT_ROT", "OBJECT_VELOCITY", "OBJECT_OWNER", "OBJECT_GROUP",
+    "OBJECT_CREATOR", "OBJECT_ROOT", "OBJECT_PRIM_COUNT", "OBJECT_TOTAL_SCRIPT_COUNT",
+    "OBJECT_RUNNING_SCRIPT_COUNT", "OBJECT_ATTACHED_POINT")
+DATA_ONLINE, DATA_NAME, DATA_BORN, DATA_PAYINFO = _consts("DATA_ONLINE", "DATA_NAME", "DATA_BORN", "DATA_PAYINFO")
+(PARCEL_DETAILS_NAME, PARCEL_DETAILS_DESC, PARCEL_DETAILS_OWNER, PARCEL_DETAILS_GROUP, PARCEL_DETAILS_AREA,
+ PARCEL_DETAILS_ID) = _consts("PARCEL_DETAILS_NAME", "PARCEL_DETAILS_DESC", "PARCEL_DETAILS_OWNER",
+                              "PARCEL_DETAILS_GROUP", "PARCEL_DETAILS_AREA", "PARCEL_DETAILS_ID")
+(LINKSETDATA_OK, LINKSETDATA_EMEMORY, LINKSETDATA_ENOKEY, LINKSETDATA_EPROTECTED, LINKSETDATA_NOTFOUND,
+ LINKSETDATA_NOUPDATE) = _consts("LINKSETDATA_OK", "LINKSETDATA_EMEMORY", "LINKSETDATA_ENOKEY",
+                                 "LINKSETDATA_EPROTECTED", "LINKSETDATA_NOTFOUND", "LINKSETDATA_NOUPDATE")
+LINKSETDATA_RESET, LINKSETDATA_UPDATE, LINKSETDATA_DELETE, LINKSETDATA_MULTIDELETE = _consts(
+    "LINKSETDATA_RESET", "LINKSETDATA_UPDATE", "LINKSETDATA_DELETE", "LINKSETDATA_MULTIDELETE")
 _CONTENT_TYPES = {CONSTANTS[name]: mime for name, mime in (
     ("CONTENT_TYPE_TEXT", "text/plain"), ("CONTENT_TYPE_HTML", "text/html"), ("CONTENT_TYPE_XML", "application/xml"),
     ("CONTENT_TYPE_XHTML", "application/xhtml+xml"), ("CONTENT_TYPE_ATOM", "application/atom+xml"),
@@ -43,14 +62,59 @@ _CONTENT_TYPES = {CONSTANTS[name]: mime for name, mime in (
 
 # Grid limits that are not LSL constants.
 MAX_LISTENS = 65              # llListen handles per script before "Too Many Listens"
+MAX_URLS = 38                 # HTTP-in URLs per script, what llGetFreeURLs counts down from
 LINKSET_DATA_SIZE = 131072    # bytes of linkset data per object
+HTTP_BODY_DEFAULT = 2048      # bytes of an HTTP response body kept without HTTP_BODY_MAXLENGTH
 MIN_TIMER = 0.022             # one simulator frame: shorter timers and sensor rates are rounded up to it
-MAX_TICK_STEPS = 100000       # timer firings a single tick() may run before it is declared a runaway
-MAX_PATTERN_LEN = 256         # llLinksetDataFindKeys patterns longer than this match nothing
+MAX_SLEEP = 31536000.0        # one year: llSleep never moves the clock further in one call
+SENSOR_MAX = 32               # results of one sensor scan, nearest first (16 before March 2024)
+SLT_OFFSET = -8 * 3600        # Second Life Time for llGetWallclock, taken as UTC-8 all year
+RECORD_ONLY = frozenset(("llGiveInventory", "llTakeControls", "llReleaseControls", "llStartAnimation",
+                         "llStopAnimation"))   # modelled as "record the call", even under strict
+
+# lsltest's own guards, not grid limits.
+MAX_RUN_ROUNDS = 10000        # run() rounds before the scripts are declared to be ping-ponging
+MAX_TICK_STEPS = 100000       # timer or sensor steps a single tick() may run
+MAX_RECORDS = 100000          # chat lines, dialogs, requests... of one kind the simulator keeps
+MAX_PATTERN_LEN = 256         # llLinksetDataFindKeys patterns longer than this match nothing...
+MAX_MATCH_LEN = 256           # ...and only the first characters of a key are matched
+MAX_SCRIPT_BYTES = 1048576    # a .lsl file over 1 MB is refused
 
 
-class ResetSignal(Exception):
-    pass
+def _clip(text, nbytes):
+    """text cut to nbytes of UTF-8, as the grid cuts chat, hover text and HTTP bodies."""
+    raw = text.encode("utf-8")
+    return text if len(raw) <= nbytes else raw[:nbytes].decode("utf-8", "ignore")
+
+
+def _http_options(params):
+    """The HTTP_* flags of llHTTPRequest as {flag: value}, plus the (name, value) custom headers."""
+    options, headers, i = {}, [], 0
+    while i < len(params):
+        if params[i] == HTTP_CUSTOM_HEADER:
+            headers.append(tuple(to_string(v) for v in params[i + 1:i + 3]))
+            i += 3
+        else:
+            if i + 1 < len(params):
+                options[params[i]] = params[i + 1]
+            i += 2
+    return options, headers
+
+
+def _safe_pattern(pattern):
+    """A compiled regex for llLinksetDataFindKeys, or None when the pattern is refused.
+
+    Python's backtracking engine takes exponential time on nested quantifiers and polynomial time on
+    several unbounded ones, so groups, backreferences and more than one unbounded quantifier are
+    refused; keys are matched on their first MAX_MATCH_LEN characters."""
+    if len(pattern) > MAX_PATTERN_LEN or "(" in pattern or re.search(r"\\\d", pattern):
+        return None
+    if len(re.findall(r"[*+]|\{\d+,\}", pattern)) > 1:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
 
 
 class Avatar(object):
@@ -66,8 +130,7 @@ class Avatar(object):
 
 
 class SimObject(object):
-    def __init__(self, sim, key, name, desc, owner, group):
-        self.sim = sim
+    def __init__(self, key, name, desc, owner, group):
         self.key = key
         self.name = name
         self.desc = desc
@@ -80,12 +143,12 @@ class SimObject(object):
         self.inventory = {}                   # name -> (type, content)
         self.linkset_data = {}                # name -> value
         self.linkset_protected = {}           # name -> (value, password)
+        self.cached = set()                   # notecards the grid has in its cache (llGetNotecardLineSync)
         self.text = ""
         self.attached = 0
         self.wearer = None
         self.start_param = 0
         self.alive = True
-        self.properties = {}                  # recorded prim parameter calls
 
     def script_named(self, name):
         for script in self.scripts:
@@ -114,9 +177,9 @@ class Chat(object):
 
 class HttpOutRequest(object):
     """One llHTTPRequest the script sent. `response` is (status, body) once answered."""
-    __slots__ = ("key", "script", "url", "method", "body", "params", "response", "time")
+    __slots__ = ("key", "script", "url", "method", "body", "params", "response", "time", "maxlen")
 
-    def __init__(self, key, script, url, method, body, params, when):
+    def __init__(self, key, script, url, method, body, params, when, maxlen):
         self.key = key
         self.script = script
         self.url = url
@@ -125,6 +188,7 @@ class HttpOutRequest(object):
         self.params = params
         self.response = None
         self.time = when
+        self.maxlen = maxlen                  # HTTP_BODY_MAXLENGTH: the response body is cut there
 
     def __repr__(self):
         return "HttpOutRequest(%s %s, %d bytes)" % (self.method, self.url, len(self.body))
@@ -144,13 +208,14 @@ class Simulator(object):
         self.dialogs = []                     # SimpleNamespace(avatar, text, buttons, channel, object, script, time)
         self.textboxes = []                   # SimpleNamespace(avatar, text, channel, object, script, time)
         self.http_out = []                    # HttpOutRequest, every llHTTPRequest in order
+        self._http_pending = []               # the ones not answered yet
         self.http_handler = None              # callable(HttpOutRequest) -> (status, body) or None, answers during run()
         self.http_in = {}                     # url -> script
         self.http_in_pending = {}             # request key -> dict(status, body, content_type, headers)
-        self.link_messages = []               # SimpleNamespace(sender, link, num, str, id, time)
-        self.calls = []                       # (script name, builtin, args) for unmodelled builtins
+        self.link_messages = []               # SimpleNamespace(script, sender, link, num, str, id, time)
+        self.calls = []                       # (script name, builtin, args): calls that are only recorded
         self.errors = []                      # (script name, ScriptError)
-        self.emails = []                      # SimpleNamespace(to, subject, body, sender)
+        self.emails = []                      # SimpleNamespace(to, subject, body, object)
         self.permission_policy = True         # True grants everything, False refuses, or callable(avatar, mask) -> mask
         self.constants = CONSTANTS            # LSL constants by name, from builtins.txt
         self.signatures = SIGNATURES          # builtin name -> (return type, [parameter types])
@@ -168,15 +233,24 @@ class Simulator(object):
 
     def rez(self, name="Object", desc="", owner=None, group=NULL_KEY):
         owner = owner or self.owner
-        obj = SimObject(self, self.new_key(), name, desc, owner.key, group)
-        self.objects.append(obj)
+        obj = SimObject(self.new_key(), name, desc, owner.key, group)
+        self._keep(self.objects, obj)
         return obj
+
+    def _keep(self, records, item):
+        """Append to a record list; a script that fills it past MAX_RECORDS is looping and dies."""
+        if len(records) >= MAX_RECORDS:
+            raise ScriptError("Script run-time error",
+                              "lsltest: over %d records of one kind, the script is looping" % MAX_RECORDS)
+        records.append(item)
 
     def load(self, source, name=None, obj=None):
         """Attach a script to an object (the default one when None). source: path of a .lsl file, or LSL text."""
         if "{" not in source and source.lower().endswith(".lsl"):
             if not os.path.isfile(source):
                 raise FileNotFoundError("no such script: %s" % source)
+            if os.path.getsize(source) > MAX_SCRIPT_BYTES:
+                raise LslSyntaxError("script file over %d bytes" % MAX_SCRIPT_BYTES)
             with open(source, "r", encoding="utf-8") as handle:
                 text = handle.read()
             name = name or os.path.splitext(os.path.basename(source))[0]
@@ -190,9 +264,15 @@ class Simulator(object):
         obj.inventory[name] = (INVENTORY_SCRIPT, text)
         return script
 
-    def notecard(self, name, text, obj=None):
-        obj = obj or self.objects[0]
+    def notecard(self, name, text, obj=None, cached=False):
+        """Put a notecard in the object (the default one, rezzed if needed). cached=True: llGetNotecardLineSync
+        answers at once instead of NAK."""
+        obj = obj or (self.objects[0] if self.objects else self.rez())
         obj.inventory[name] = (INVENTORY_NOTECARD, text)
+        if cached:
+            obj.cached.add(name)
+        else:
+            obj.cached.discard(name)
 
     def all_scripts(self):
         return [s for o in self.objects if o.alive for s in o.scripts]
@@ -205,26 +285,29 @@ class Simulator(object):
             script.post("state_entry", [])
         self.run()
 
-    def run(self, limit=100000):
-        """Dispatch queued events until every queue is empty. Returns the number of events run."""
+    def run(self):
+        """Dispatch queued events, round after round, until every queue is empty. Returns the number run.
+
+        A round dispatches what each script had queued when the round began, so scripts that keep
+        posting to themselves or to each other are caught after MAX_RUN_ROUNDS rounds."""
         total = 0
-        rounds = 0
-        while rounds < limit:
+        for _ in range(MAX_RUN_ROUNDS):
             progressed = 0
             for script in self.all_scripts():
-                if script.queue:
-                    progressed += self.run_script(script)
+                progressed += self.run_script(script)
             if self.http_handler:
                 progressed += self.auto_respond()
             if not progressed:
-                break
+                return total
             total += progressed
-            rounds += 1
-        return total
+        raise RuntimeError("the scripts kept posting events for %d rounds: they are looping" % MAX_RUN_ROUNDS)
 
     def run_script(self, script):
+        """Dispatch the events the script has queued now (not the ones its handlers add)."""
         count = 0
-        while script.queue and script.running and not script.dead:
+        for _ in range(len(script.queue)):
+            if not script.queue or not script.running or script.dead:
+                break
             name, args, detected = script.queue.pop(0)
             try:
                 script.dispatch(name, args, detected)
@@ -243,17 +326,19 @@ class Simulator(object):
                 break
             steps += 1
             if steps > MAX_TICK_STEPS:
-                raise RuntimeError("tick(%s) fired %d timers before reaching the end: the timer is too short for this tick"
+                raise RuntimeError("tick(%s) ran %d timer or sensor steps before reaching the end: the timer is too short"
                                    % (seconds, MAX_TICK_STEPS))
             self.time = max(self.time, due)
             self.fire_due()
             self.run()
-        self.time = end
+        self.time = max(self.time, end)       # never backwards: a handler may have slept past the end
         self.run()
 
     def _next_due(self):
         due = None
         for script in self.all_scripts():
+            if script.dead or not script.running:
+                continue
             for when in (script.timer_due, script.sensor_repeat and script.sensor_repeat.due):
                 if when is not None and (due is None or when < due):
                     due = when
@@ -269,17 +354,15 @@ class Simulator(object):
                 self.deliver_sensor(script, rep.name, rep.id, rep.type, rep.range, rep.arc)
                 rep.due = self.time + rep.rate
 
-    def record_error(self, script, err):
-        self.errors.append((script.name, err))
-
     # --- event injection ---------------------------------------------------
 
-    def detected_record(self, avatar=None, obj=None):
+    def _detected_record(self, avatar=None, obj=None):
+        """What llDetected* reads for one detected avatar or object (keys mirror the llDetected* names)."""
         if avatar is not None:
             return {"key": avatar.key, "name": avatar.name, "owner": avatar.key, "pos": avatar.pos,
-                    "rot": ZERO_ROTATION, "group": avatar.group, "type": 1, "vel": ZERO_VECTOR}
+                    "rot": ZERO_ROTATION, "group": avatar.group, "type": AGENT, "vel": ZERO_VECTOR}
         return {"key": obj.key, "name": obj.name, "owner": obj.owner, "pos": obj.pos, "rot": obj.rot,
-                "group": obj.group, "type": 4, "vel": ZERO_VECTOR}
+                "group": obj.group, "type": PASSIVE, "vel": ZERO_VECTOR}
 
     def _inject(self, obj, events, args, detected=None):
         """Post the same event(s) to every script of obj (the default object when None), then run."""
@@ -291,16 +374,19 @@ class Simulator(object):
 
     def touch(self, avatar=None, obj=None):
         """Touch an object: touch_start, touch, touch_end with one detected avatar (the owner by default)."""
-        det = [self.detected_record(avatar=avatar or self.owner)]
-        self._inject(obj, ("touch_start", "touch", "touch_end"), [1], det)
+        det = [self._detected_record(avatar=avatar or self.owner)]
+        for event in ("touch_start", "touch", "touch_end"):     # the release comes after the press has run
+            self._inject(obj, (event,), [1], det)
 
     def collision(self, avatar=None, obj=None):
-        det = [self.detected_record(avatar=avatar or self.owner)]
-        self._inject(obj, ("collision_start", "collision", "collision_end"), [1], det)
+        det = [self._detected_record(avatar=avatar or self.owner)]
+        for event in ("collision_start", "collision", "collision_end"):
+            self._inject(obj, (event,), [1], det)
 
     def say(self, avatar, channel, text):
         """An avatar speaks on a channel; listening scripts receive listen()."""
-        self.chat.append(Chat(channel, avatar.key, avatar.name, text, "avatar", None, self.time))
+        text = _clip(text, 1024)
+        self._keep(self.chat, Chat(channel, avatar.key, avatar.name, text, "avatar", None, self.time))
         self.deliver_chat(channel, avatar.key, avatar.name, text, source_obj=None, target=None)
         self.run()
 
@@ -319,7 +405,16 @@ class Simulator(object):
                 return box
         raise AssertionError("no textbox was shown to %s" % avatar.name)
 
+    def _drop_urls(self, obj):
+        """Rez and region restart invalidate every HTTP-in URL of the object, as on the grid."""
+        for script in obj.scripts:
+            for url in list(script.urls):
+                self.ll_ReleaseURL(script, url)
+
     def changed(self, flags, obj=None):
+        obj = obj or self.objects[0]
+        if flags & (CHANGED_REGION | CHANGED_REGION_START):
+            self._drop_urls(obj)
         self._inject(obj, ("changed",), [flags])
 
     def on_rez(self, start_param=0, obj=None):
@@ -327,6 +422,7 @@ class Simulator(object):
         obj.start_param = start_param
         for script in obj.scripts:
             script.start_param = start_param
+        self._drop_urls(obj)
         self._inject(obj, ("on_rez",), [start_param])
 
     def attach(self, avatar=None, obj=None, point=31):
@@ -346,8 +442,9 @@ class Simulator(object):
         obj.wearer = None
         self._inject(obj, ("attach",), [NULL_KEY])
 
-    def link_message(self, num, text, id_=NULL_KEY, obj=None, sender=1):
-        self._inject(obj, ("link_message",), [sender, num, text, Key(id_)])
+    def link_message(self, num, text, id=NULL_KEY, obj=None, sender=0):
+        """A link_message from another prim (sender is its link number; 0 is the only prim of a single-prim object)."""
+        self._inject(obj, ("link_message",), [sender, num, text, Key(id)])
 
     def money(self, avatar, amount, obj=None):
         self._inject(obj, ("money",), [avatar.key, amount])
@@ -356,25 +453,35 @@ class Simulator(object):
         script.reset()
         self.run()
 
-    def _answer(self, request, status, body, headers=None):
-        request.response = (status, body)
-        metadata = [0, "text/plain;charset=utf-8"] + list(headers or [])
-        request.script.post("http_response", [request.key, status, metadata, body])
+    def _post_prim(self, script, event, args):
+        """Post an event to every script of the prim: http_response and dataserver reach them all."""
+        for other in script.obj.scripts:
+            other.post(event, args)
 
-    def http_respond(self, status=200, body="", request=None, headers=None):
+    def _answer(self, request, status, body, metadata=None):
+        """Deliver the response: the body is cut at the request's HTTP_BODY_MAXLENGTH and the
+        metadata then starts with [HTTP_BODY_TRUNCATED, limit]."""
+        metadata = list(metadata or [])
+        if len(body.encode("utf-8")) > request.maxlen:
+            body = _clip(body, request.maxlen)
+            metadata = [HTTP_BODY_TRUNCATED, request.maxlen] + metadata
+        request.response = (status, body)
+        self._http_pending.remove(request)
+        self._post_prim(request.script, "http_response", [request.key, status, metadata, body])
+
+    def http_respond(self, status=200, body="", request=None, metadata=None):
         """Answer a pending llHTTPRequest (the oldest unanswered one by default), then run."""
         if request is None:
-            pending = [r for r in self.http_out if r.response is None]
-            if not pending:
+            if not self._http_pending:
                 raise AssertionError("no pending HTTP request")
-            request = pending[0]
-        self._answer(request, status, body, headers)
+            request = self._http_pending[0]
+        self._answer(request, status, body, metadata)
         self.run()
 
     def auto_respond(self):
         """Called by run(): hand every unanswered request to http_handler. Returns how many it answered."""
         count = 0
-        for request in [r for r in self.http_out if r.response is None]:
+        for request in list(self._http_pending):
             answer = self.http_handler(request)
             if answer is None:
                 continue
@@ -403,22 +510,12 @@ class Simulator(object):
         request_headers.setdefault("x-remote-ip", "127.0.0.1")
         request_headers.setdefault("user-agent", "lsltest")
         self.http_in_pending[key] = {"status": None, "body": "", "content_type": "text/plain", "headers": request_headers}
-        script.post("http_request", [key, method, body[:2048]])
+        script.post("http_request", [key, method, _clip(body, 2048)])
         self.run()
         answer = self.http_in_pending.pop(key)
         if answer["status"] is None:
             return (500, "the script did not answer", "text/plain")
         return (answer["status"], answer["body"], answer["content_type"])
-
-    def grant_url(self, script):
-        url = "http://sim.invalid/cap/%s" % self.new_key()
-        self.http_in[url] = script
-        script.urls.add(url)
-        return url
-
-    def release_url(self, script, url):
-        self.http_in.pop(url, None)
-        script.urls.discard(url)
 
     def deliver_sensor(self, script, name, id_, kind, range_, arc):
         found = []
@@ -432,7 +529,7 @@ class Simulator(object):
                         continue
                     if is_valid_key(id_) and id_ != NULL_KEY and av.key != id_:
                         continue
-                    found.append(self.detected_record(avatar=av))
+                    found.append(self._detected_record(avatar=av))
         if kind & (ACTIVE | PASSIVE | SCRIPTED):
             for obj in self.objects:
                 if obj is script.obj or not obj.alive or obj.attached:
@@ -440,26 +537,21 @@ class Simulator(object):
                 if pure.llVecDist(here, obj.pos) <= range_:
                     if name and obj.name != name:
                         continue
-                    found.append(self.detected_record(obj=obj))
-        found = found[:32]
+                    found.append(self._detected_record(obj=obj))
+        found.sort(key=lambda d: pure.llVecDist(here, d["pos"]))
+        found = found[:SENSOR_MAX]
         if found:
             script.post("sensor", [len(found)], found)
         else:
             script.post("no_sensor", [])
 
     def deliver_chat(self, channel, speaker_key, speaker_name, text, source_obj, target):
-        if len(text.encode("utf-8")) > 1024:
-            text = text.encode("utf-8")[:1024].decode("utf-8", "ignore")
         for script in self.all_scripts():
             if source_obj is not None and script.obj is source_obj:
                 continue                      # an object never hears itself
-            if target is not None:
-                if isinstance(target, SimObject):
-                    if script.obj is not target:
-                        continue
-                else:
-                    if script.obj.wearer is None or script.obj.wearer.key != target:
-                        continue
+            if target is not None and script.obj.key != target and (
+                    script.obj.wearer is None or script.obj.wearer.key != target):
+                continue                      # llRegionSayTo: the target object, or the target avatar's attachments
             for listen in script.listens.values():
                 if not listen.active or listen.channel != channel:
                     continue
@@ -475,7 +567,7 @@ class Simulator(object):
     # --- builtin dispatch --------------------------------------------------
 
     def call_builtin(self, script, name, args):
-        sig = self.signatures.get(name)
+        sig = SIGNATURES.get(name)
         if sig is None:
             raise ScriptError("Script run-time error", "unknown function %s" % name)
         ret_type, param_types = sig
@@ -488,25 +580,30 @@ class Simulator(object):
         elif name in pure.PURE:
             result = pure.PURE[name](*coerced)
         else:
-            if self.strict:
+            if self.strict and name not in RECORD_ONLY:
                 raise UnsupportedError("%s is not modelled by lsltest (set strict=False to record it)" % name)
-            self.calls.append((script.name, name, coerced))
+            self.record_call(script, name, *coerced)
             result = None
         if ret_type == "void":
             return None
         if result is None:
             return default_value(ret_type)
-        return coerce(result, ret_type)
+        return check_size(coerce(result, ret_type))
 
-    def record(self, script, name, *args):
-        self.calls.append((script.name, name, list(args)))
+    def record_call(self, script, name, *args):
+        self._keep(self.calls, (script.name, name, list(args)))
+
+    def _debug(self, script, text):
+        """What the grid shouts on DEBUG_CHANNEL; visible in sim.chat with kind "debug"."""
+        self._keep(self.chat, Chat(DEBUG_CHANNEL, script.obj.key, script.obj.name, text, "debug", None, self.time))
 
     # --- chat ----------------------------------------------------------------
 
     def _speak(self, script, channel, text, kind, target=None):
         obj = script.obj
-        self.chat.append(Chat(channel, obj.key, obj.name, text, kind, target, self.time))
-        if kind == "ownersay" or kind == "im" or (kind == "regionsayto" and channel == 0):
+        text = _clip(text, 1024)
+        self._keep(self.chat, Chat(channel, obj.key, obj.name, text, kind, target, self.time))
+        if kind == "ownersay" or (kind == "regionsayto" and channel == PUBLIC_CHANNEL):
             return
         self.deliver_chat(channel, obj.key, obj.name, text, source_obj=obj, target=target)
 
@@ -525,29 +622,29 @@ class Simulator(object):
         self._speak(script, channel, text, "regionsay")
 
     def ll_RegionSayTo(self, script, target, channel, text):
-        obj = next((o for o in self.objects if o.key == target), None)
-        self._speak(script, channel, text, "regionsayto", target=obj if obj is not None else target)
+        self._speak(script, channel, text, "regionsayto", target=Key(target))
 
     def ll_OwnerSay(self, script, text):
-        self._speak(script, 0, text, "ownersay")
+        self._speak(script, PUBLIC_CHANNEL, text, "ownersay")
 
     def ll_InstantMessage(self, script, user, text):
-        self.chat.append(Chat(0, script.obj.key, script.obj.name, text[:1023], "im", user, self.time))
+        self._keep(self.chat, Chat(PUBLIC_CHANNEL, script.obj.key, script.obj.name, _clip(text, 1023), "im",
+                                   Key(user), self.time))
         self.time += 2.0
 
     def ll_Email(self, script, address, subject, message):
-        self.emails.append(SimpleNamespace(to=address, subject=subject, body=message, sender=script.obj.key))
+        self._keep(self.emails, SimpleNamespace(to=address, subject=subject, body=message, object=script.obj.key))
         self.time += 20.0
 
     # --- listens ---------------------------------------------------------------
 
     def ll_Listen(self, script, channel, name, id_, msg):
-        if len(script.listens) >= MAX_LISTENS:
-            raise ScriptError("Too Many Listens")
         wanted = (channel, name, id_ if is_valid_key(id_) and id_ != NULL_KEY else "", msg)
         for handle, listen in script.listens.items():
             if (listen.channel, listen.name, listen.id, listen.msg) == wanted:
-                return handle
+                return handle                 # the same filter again: the existing handle, no new listen
+        if len(script.listens) >= MAX_LISTENS:
+            raise ScriptError("Too Many Listens")
         handle = script.next_listen
         script.next_listen += 1
         script.listens[handle] = SimpleNamespace(channel=wanted[0], name=wanted[1], id=wanted[2], msg=wanted[3], active=True)
@@ -563,30 +660,34 @@ class Simulator(object):
     # --- dialogs -------------------------------------------------------------
 
     def ll_Dialog(self, script, avatar, message, buttons, channel):
+        # every llDialog error is shouted on DEBUG_CHANNEL and no dialog is shown; the script goes on (wiki)
         if message == "" or len(message.encode("utf-8")) >= 512:
-            self.chat.append(Chat(2147483647, script.obj.key, script.obj.name,
-                                  "llDialog: must supply a message" if message == "" else "llDialog: message too long, must be less than 512 characters",
-                                  "debug", None, self.time))
+            self._debug(script, "llDialog: must supply a message" if message == ""
+                        else "llDialog: message too long, must be less than 512 characters")
             return
-        labels = [to_string(b) for b in buttons] or ["OK"]
+        if any(type_of(b) != "string" for b in buttons):
+            self._debug(script, "llDialog: all buttons must be strings")
+            return
+        labels = list(buttons) or ["OK"]
         if len(labels) > 12:
-            raise ScriptError("Script run-time error", "llDialog: too many buttons (%d)" % len(labels))
-        for label in labels:
-            if label == "" or len(label.encode("utf-8")) > 24:
-                raise ScriptError("Script run-time error", "llDialog: button label must be 1 to 24 bytes: %r" % label)
-        self.dialogs.append(SimpleNamespace(avatar=avatar, text=message, buttons=labels, channel=channel,
-                                            object=script.obj.key, script=script.name, time=self.time))
+            self._debug(script, "llDialog: too many buttons [%d]" % len(labels))
+            return
+        if any(label == "" or len(label.encode("utf-8")) > 24 for label in labels):
+            self._debug(script, "llDialog: button labels must be between 1 and 24 bytes")
+            return
+        self._keep(self.dialogs, SimpleNamespace(avatar=avatar, text=message, buttons=labels, channel=channel,
+                                                 object=script.obj.key, script=script, time=self.time))
         self.time += 1.0
 
     def ll_TextBox(self, script, avatar, message, channel):
-        self.textboxes.append(SimpleNamespace(avatar=avatar, text=message, channel=channel, object=script.obj.key,
-                                              script=script.name, time=self.time))
+        self._keep(self.textboxes, SimpleNamespace(avatar=avatar, text=message, channel=channel,
+                                                   object=script.obj.key, script=script, time=self.time))
         self.time += 1.0
 
     # --- timers and time ---------------------------------------------------
 
     def ll_SetTimerEvent(self, script, seconds):
-        if seconds <= 0.0:
+        if not seconds > 0.0:                 # also NaN
             script.timer_interval = 0.0
             script.timer_due = None
         else:
@@ -595,8 +696,7 @@ class Simulator(object):
 
     def ll_Sleep(self, script, seconds):
         if seconds > 0:
-            self.time += seconds
-            self.fire_due()
+            self.time += min(seconds, MAX_SLEEP)   # due timers fire after the handler, as on the grid
 
     def ll_GetTime(self, script):
         return script.time_since_start()
@@ -612,16 +712,23 @@ class Simulator(object):
     def ll_GetUnixTime(self, script):
         return to_int32(int(self.epoch + self.time))
 
+    def _utc(self):
+        try:
+            return _time.gmtime(self.epoch + self.time)
+        except (OSError, OverflowError, ValueError):   # the clock was pushed beyond what the platform converts
+            return _time.gmtime(0)
+
     def ll_GetTimestamp(self, script):
-        return _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime(self.epoch + self.time)) + ".%06dZ" % int((self.time % 1) * 1e6)
+        return _time.strftime("%Y-%m-%dT%H:%M:%S", self._utc()) + ".%06dZ" % int((self.time % 1) * 1e6)
 
     def ll_GetWallclock(self, script):
+        return f32(int((self.epoch + self.time + SLT_OFFSET) % 86400))   # seconds since midnight SLT
+
+    def ll_GetGMTclock(self, script):
         return f32((self.epoch + self.time) % 86400)
 
-    ll_GetGMTclock = ll_GetWallclock
-
     def ll_GetDate(self, script):
-        return _time.strftime("%Y-%m-%d", _time.gmtime(self.epoch + self.time))
+        return _time.strftime("%Y-%m-%d", self._utc())
 
     # --- script control ----------------------------------------------------
 
@@ -671,7 +778,7 @@ class Simulator(object):
 
     def ll_Die(self, script):
         script.obj.alive = False
-        self.record(script, "llDie")
+        self.record_call(script, "llDie")
 
     # --- object and avatar getters -----------------------------------------
 
@@ -711,9 +818,7 @@ class Simulator(object):
 
     ll_GetLocalRot = ll_GetRootRotation = ll_GetRot
 
-    def ll_SetLocalRot(self, script, rot):
-        script.obj.rot = rot
-        self.time += 0.2
+    ll_SetLocalRot = ll_SetRot
 
     def ll_GetRegionName(self, script):
         return self.region_name
@@ -741,20 +846,25 @@ class Simulator(object):
         return script.obj.attached
 
     def ll_SetText(self, script, text, color, alpha):
-        script.obj.text = text.encode("utf-8")[:254].decode("utf-8", "ignore")
+        script.obj.text = _clip(text, 254)
 
     def ll_GetObjectDetails(self, script, key, params):
         obj = next((o for o in self.objects if o.key == key), None)
         av = self.avatars.get(key)
-        out = []
-        for p in params:
-            if obj is not None:
-                out.append({1: obj.name, 2: obj.desc, 3: obj.pos, 4: obj.rot, 5: ZERO_VECTOR, 6: Key(obj.owner),
-                            7: Key(obj.group), 8: Key(obj.owner), 12: 1, 13: obj.prims, 25: Key(obj.key)}.get(p, ""))
-            elif av is not None:
-                out.append({1: av.name, 2: "", 3: av.pos, 4: ZERO_ROTATION, 5: ZERO_VECTOR, 6: Key(av.key),
-                            7: Key(av.group), 8: Key(av.key)}.get(p, ""))
-        return out
+        if obj is not None:
+            details = {OBJECT_NAME: obj.name, OBJECT_DESC: obj.desc, OBJECT_POS: obj.pos, OBJECT_ROT: obj.rot,
+                       OBJECT_VELOCITY: ZERO_VECTOR, OBJECT_OWNER: Key(obj.owner), OBJECT_GROUP: Key(obj.group),
+                       OBJECT_CREATOR: Key(obj.owner), OBJECT_ROOT: Key(obj.key), OBJECT_PRIM_COUNT: obj.prims,
+                       OBJECT_TOTAL_SCRIPT_COUNT: len(obj.scripts),
+                       OBJECT_RUNNING_SCRIPT_COUNT: sum(1 for s in obj.scripts if s.running and not s.dead),
+                       OBJECT_ATTACHED_POINT: obj.attached}
+        elif av is not None:
+            details = {OBJECT_NAME: av.name, OBJECT_DESC: "", OBJECT_POS: av.pos, OBJECT_ROT: ZERO_ROTATION,
+                       OBJECT_VELOCITY: ZERO_VECTOR, OBJECT_OWNER: Key(av.key), OBJECT_GROUP: Key(av.group),
+                       OBJECT_CREATOR: Key(av.key), OBJECT_ROOT: Key(av.key), OBJECT_ATTACHED_POINT: 0}
+        else:
+            return []
+        return [details.get(p, "") for p in params]
 
     def ll_Key2Name(self, script, key):
         av = self.avatars.get(key)
@@ -763,35 +873,36 @@ class Simulator(object):
         obj = next((o for o in self.objects if o.key == key), None)
         return obj.name if obj is not None else ""
 
-    def ll_GetDisplayName(self, script, key):
+    def _avatar_attr(self, key, attr):
         av = self.avatars.get(key)
-        return av.display_name if av is not None else ""
+        return getattr(av, attr) if av is not None else ""
+
+    def _dataserver(self, script, value):
+        """The grid answers asynchronous lookups with a dataserver event in every script of the prim."""
+        query = self.new_key()
+        self._post_prim(script, "dataserver", [query, value])
+        self.time += 0.1
+        return query
+
+    def ll_GetDisplayName(self, script, key):
+        return self._avatar_attr(key, "display_name")
 
     def ll_GetUsername(self, script, key):
-        av = self.avatars.get(key)
-        return av.username if av is not None else ""
+        return self._avatar_attr(key, "username")
 
     def ll_RequestDisplayName(self, script, key):
-        query = self.new_key()
-        av = self.avatars.get(key)
-        script.post("dataserver", [query, av.display_name if av is not None else ""])
-        return query
+        return self._dataserver(script, self._avatar_attr(key, "display_name"))
 
     def ll_RequestUsername(self, script, key):
-        query = self.new_key()
-        av = self.avatars.get(key)
-        script.post("dataserver", [query, av.username if av is not None else ""])
-        return query
+        return self._dataserver(script, self._avatar_attr(key, "username"))
 
     def ll_RequestAgentData(self, script, key, data):
-        query = self.new_key()
         av = self.avatars.get(key)
         value = ""
         if av is not None:
-            value = {1: "1" if av.online else "0", 2: av.name, 3: "2010-01-01", 8: "0"}.get(data, "")
-        script.post("dataserver", [query, value])
-        self.time += 0.1
-        return query
+            value = {DATA_ONLINE: "1" if av.online else "0", DATA_NAME: av.name, DATA_BORN: "2010-01-01",
+                     DATA_PAYINFO: "0"}.get(data, "")
+        return self._dataserver(script, value)
 
     def ll_Name2Key(self, script, name):
         for av in self.avatars.values():
@@ -821,7 +932,9 @@ class Simulator(object):
         return 1
 
     def ll_GetParcelDetails(self, script, pos, params):
-        return [{0: "Test Parcel", 1: "", 2: Key(self.owner.key), 3: NULL_KEY, 4: 65536, 5: Key("")}.get(p, "") for p in params]
+        details = {PARCEL_DETAILS_NAME: "Test Parcel", PARCEL_DETAILS_DESC: "", PARCEL_DETAILS_OWNER: Key(self.owner.key),
+                   PARCEL_DETAILS_GROUP: NULL_KEY, PARCEL_DETAILS_AREA: 65536, PARCEL_DETAILS_ID: Key("")}
+        return [details.get(p, "") for p in params]
 
     # --- detected ------------------------------------------------------------
 
@@ -867,10 +980,10 @@ class Simulator(object):
         return item[0] if item else INVENTORY_NONE
 
     def ll_GetInventoryNumber(self, script, kind):
-        return sum(1 for t, _ in script.obj.inventory.values() if kind == -1 or t == kind)
+        return sum(1 for t, _ in script.obj.inventory.values() if kind == INVENTORY_ALL or t == kind)
 
     def ll_GetInventoryName(self, script, kind, index):
-        names = sorted(n for n, (t, _) in script.obj.inventory.items() if kind == -1 or t == kind)
+        names = sorted(n for n, (t, _) in script.obj.inventory.items() if kind == INVENTORY_ALL or t == kind)
         return names[index] if 0 <= index < len(names) else ""
 
     def ll_GetInventoryKey(self, script, name):
@@ -886,33 +999,25 @@ class Simulator(object):
         return item[1].split("\n")
 
     def ll_GetNotecardLine(self, script, name, line):
-        query = self.new_key()
         lines = self._notecard_lines(script, name)
         if lines is None:
-            self.chat.append(Chat(2147483647, script.obj.key, script.obj.name, "Couldn't find notecard %s" % name, "debug", None, self.time))
+            self._debug(script, "Couldn't find notecard %s" % name)
             return NULL_KEY
-        data = lines[line] if 0 <= line < len(lines) else EOF
-        script.post("dataserver", [query, data.encode("utf-8")[:1024].decode("utf-8", "ignore")])
-        self.time += 0.1
-        return query
+        script.obj.cached.add(name)           # an asynchronous read puts the notecard in the grid's cache
+        return self._dataserver(script, _clip(lines[line] if 0 <= line < len(lines) else EOF, 1024))
 
     def ll_GetNumberOfNotecardLines(self, script, name):
-        query = self.new_key()
         lines = self._notecard_lines(script, name)
         if lines is None:
             return NULL_KEY
-        script.post("dataserver", [query, str(len(lines))])
-        self.time += 0.1
-        return query
+        script.obj.cached.add(name)
+        return self._dataserver(script, str(len(lines)))
 
     def ll_GetNotecardLineSync(self, script, name, line):
         lines = self._notecard_lines(script, name)
-        if lines is None:
-            return NAK
+        if lines is None or name not in script.obj.cached:
+            return NAK                        # not cached yet: the script must fall back to llGetNotecardLine
         return lines[line] if 0 <= line < len(lines) else EOF
-
-    def ll_GiveInventory(self, script, destination, name):
-        self.record(script, "llGiveInventory", destination, name)
 
     def ll_RemoveInventory(self, script, name):
         script.obj.inventory.pop(name, None)
@@ -920,33 +1025,50 @@ class Simulator(object):
     # --- HTTP out -------------------------------------------------------------
 
     def ll_HTTPRequest(self, script, url, params, body):
+        options, headers = _http_options(params)
+        if any(h and h[0].lower() == "content-type" for h in headers):
+            raise ScriptError("Script run-time error",
+                              "llHTTPRequest: Content-Type is set with HTTP_MIMETYPE, not with HTTP_CUSTOM_HEADER")
         # the grid throttles an object to 25 requests per 20 seconds and returns NULL_KEY beyond that
-        recent = [r for r in self.http_out if r.script.obj is script.obj and self.time - r.time < 20.0]
-        if len(recent) >= 25:
+        recent = 0
+        for r in reversed(self.http_out):
+            if self.time - r.time >= 20.0:
+                break
+            if r.script.obj is script.obj:
+                recent += 1
+        if recent >= 25:
             return NULL_KEY
-        method = "GET"
-        for i in range(0, len(params) - 1, 2):
-            if params[i] == HTTP_METHOD:
-                method = to_string(params[i + 1])
+        method = to_string(options.get(HTTP_METHOD, "GET"))
+        maxlen = options.get(HTTP_BODY_MAXLENGTH, HTTP_BODY_DEFAULT)
+        if type_of(maxlen) != "integer" or maxlen <= 0:
+            maxlen = HTTP_BODY_DEFAULT
         key = self.new_key()
-        self.http_out.append(HttpOutRequest(key, script, url, method, body, list(params), self.time))
+        request = HttpOutRequest(key, script, url, method, body, list(params), self.time, maxlen)
+        self._keep(self.http_out, request)
+        self._http_pending.append(request)
         return key
 
     # --- HTTP in --------------------------------------------------------------
 
     def ll_RequestURL(self, script):
         key = self.new_key()
-        url = self.grant_url(script)
+        if len(script.urls) >= MAX_URLS:
+            script.post("http_request", [key, URL_REQUEST_DENIED, ""])
+            return key
+        url = "http://sim.invalid/cap/%s" % self.new_key()
+        self.http_in[url] = script
+        script.urls.add(url)
         script.post("http_request", [key, URL_REQUEST_GRANTED, url])
         return key
 
     ll_RequestSecureURL = ll_RequestURL
 
     def ll_ReleaseURL(self, script, url):
-        self.release_url(script, url)
+        self.http_in.pop(url, None)
+        script.urls.discard(url)
 
     def ll_GetFreeURLs(self, script):
-        return 38 - len(script.urls)
+        return MAX_URLS - len(script.urls)
 
     def ll_HTTPResponse(self, script, request_id, status, body):
         pending = self.http_in_pending.get(request_id)
@@ -968,17 +1090,23 @@ class Simulator(object):
     # --- link messages ---------------------------------------------------------
 
     def ll_MessageLinked(self, script, link, num, text, id_):
-        self.link_messages.append(SimpleNamespace(sender=script.name, link=link, num=num, str=text, id=id_, time=self.time))
+        """Delivery is by prim: every script of a target prim gets the message, the sender included."""
+        sender = self.ll_GetLinkNumber(script)
+        self._keep(self.link_messages, SimpleNamespace(script=script, sender=sender, link=link, num=num, str=text,
+                                                       id=id_, time=self.time))
         for other in script.obj.scripts:
+            target = self.ll_GetLinkNumber(other)
+            same_prim = target == sender
             deliver = (
                 link == LINK_SET
-                or (link == LINK_ALL_OTHERS and other is not script)     # single prim: the other scripts
-                or (link == LINK_ALL_CHILDREN and other.link > 1)
-                or (link == LINK_THIS and other.obj is script.obj)
-                or (link > 0 and link == other.link)
+                or (link == LINK_ALL_OTHERS and not same_prim)
+                or (link == LINK_ALL_CHILDREN and target > 1)
+                or (link == LINK_THIS and same_prim)
+                or (link >= 0 and link == target)
+                or (script.obj.prims == 1 and link in (0, 1))      # an unlinked prim answers to 0 and 1
             )
             if deliver:
-                other.post("link_message", [script.link, num, text, Key(id_)])
+                other.post("link_message", [sender, num, text, Key(id_)])
 
     # --- permissions and animations -----------------------------------------
 
@@ -993,8 +1121,8 @@ class Simulator(object):
             granted = int(policy(av, perms))
         else:
             granted = perms if policy else 0
-        script.permissions = granted
-        script.permissions_key = Key(agent) if granted else NULL_KEY
+        # the answer comes with the run_time_permissions event, never inside the calling handler
+        script.pending_permissions = (granted, Key(agent) if granted else NULL_KEY)
         script.post("run_time_permissions", [granted])
 
     def ll_GetPermissions(self, script):
@@ -1003,25 +1131,13 @@ class Simulator(object):
     def ll_GetPermissionsKey(self, script):
         return Key(script.permissions_key)
 
-    def ll_TakeControls(self, script, controls, accept, pass_on):
-        self.record(script, "llTakeControls", controls, accept, pass_on)
-
-    def ll_ReleaseControls(self, script):
-        self.record(script, "llReleaseControls")
-
-    def ll_StartAnimation(self, script, anim):
-        self.record(script, "llStartAnimation", anim)
-
-    def ll_StopAnimation(self, script, anim):
-        self.record(script, "llStopAnimation", anim)
-
     # --- sensors --------------------------------------------------------------
 
     def ll_Sensor(self, script, name, id_, kind, range_, arc):
         self.deliver_sensor(script, name, id_, kind, range_, arc)
 
     def ll_SensorRepeat(self, script, name, id_, kind, range_, arc, rate):
-        if rate <= 0:
+        if not rate > 0:                      # also NaN
             script.sensor_repeat = None
             return
         rate = max(rate, MIN_TIMER)
@@ -1042,44 +1158,68 @@ class Simulator(object):
         for script in obj.scripts:
             script.post("linkset_data", [action, name, value])
 
+    def _linkset_fits(self, obj, name, value, old):
+        """Whether writing value under name (replacing old) stays within LINKSET_DATA_SIZE."""
+        used = self._linkset_used(obj) - len(old.encode("utf-8"))
+        return used + len(name.encode("utf-8")) + len(value.encode("utf-8")) <= LINKSET_DATA_SIZE
+
+    def _linkset_keys(self, obj, pattern=None):
+        """The keys, sorted, optionally those a (restricted) regex matches."""
+        keys = list(obj.linkset_data) + list(obj.linkset_protected)
+        if pattern is not None:
+            rx = _safe_pattern(pattern)
+            if rx is None:
+                return []
+            keys = [k for k in keys if rx.search(k[:MAX_MATCH_LEN])]
+        return sorted(keys)
+
+    @staticmethod
+    def _page(keys, start, count):
+        return keys[start:start + count] if count > 0 else keys[start:]
+
     def ll_LinksetDataWrite(self, script, name, value):
         obj = script.obj
         if name == "":
-            return 2
+            return LINKSETDATA_ENOKEY
         if name in obj.linkset_protected:
-            return 3
+            return LINKSETDATA_EPROTECTED
+        old = obj.linkset_data.get(name)
         if value == "":
-            if name in obj.linkset_data:
-                del obj.linkset_data[name]
-                self._linkset_event(obj, 2, name, "")
-                return 0
-            return 4
-        if obj.linkset_data.get(name) == value:
-            return 5
-        if self._linkset_used(obj) + len(name.encode("utf-8")) + len(value.encode("utf-8")) > LINKSET_DATA_SIZE:
-            return 1
+            if old is None:
+                return LINKSETDATA_NOTFOUND
+            del obj.linkset_data[name]
+            self._linkset_event(obj, LINKSETDATA_DELETE, name, "")
+            return LINKSETDATA_OK
+        if old == value:
+            return LINKSETDATA_NOUPDATE
+        if not self._linkset_fits(obj, name, value, old or ""):
+            return LINKSETDATA_EMEMORY
         obj.linkset_data[name] = value
-        self._linkset_event(obj, 1, name, value)
-        return 0
+        self._linkset_event(obj, LINKSETDATA_UPDATE, name, value)
+        return LINKSETDATA_OK
 
     def ll_LinksetDataWriteProtected(self, script, name, value, password):
         obj = script.obj
         if name == "":
-            return 2
+            return LINKSETDATA_ENOKEY
         if name in obj.linkset_data:
-            return 3
+            return LINKSETDATA_EPROTECTED
         existing = obj.linkset_protected.get(name)
         if existing is not None and existing[1] != password:
-            return 3
+            return LINKSETDATA_EPROTECTED
         if value == "":
-            if existing is not None:
-                del obj.linkset_protected[name]
-                self._linkset_event(obj, 2, name, "")
-                return 0
-            return 4
+            if existing is None:
+                return LINKSETDATA_NOTFOUND
+            del obj.linkset_protected[name]
+            self._linkset_event(obj, LINKSETDATA_DELETE, name, "")
+            return LINKSETDATA_OK
+        if existing is not None and existing[0] == value:
+            return LINKSETDATA_NOUPDATE
+        if not self._linkset_fits(obj, name, value, existing[0] if existing else ""):
+            return LINKSETDATA_EMEMORY
         obj.linkset_protected[name] = (value, password)
-        self._linkset_event(obj, 1, name, "")
-        return 0
+        self._linkset_event(obj, LINKSETDATA_UPDATE, name, "")
+        return LINKSETDATA_OK
 
     def ll_LinksetDataRead(self, script, name):
         return script.obj.linkset_data.get(name, "")
@@ -1099,47 +1239,38 @@ class Simulator(object):
     def ll_LinksetDataReset(self, script):
         script.obj.linkset_data = {}
         script.obj.linkset_protected = {}
-        self._linkset_event(script.obj, 0, "", "")
+        self._linkset_event(script.obj, LINKSETDATA_RESET, "", "")
 
     def ll_LinksetDataAvailable(self, script):
         return LINKSET_DATA_SIZE - self._linkset_used(script.obj)
 
     def ll_LinksetDataCountKeys(self, script):
-        return len(script.obj.linkset_data) + len(script.obj.linkset_protected)
+        return len(self._linkset_keys(script.obj))
 
     def ll_LinksetDataListKeys(self, script, start, count):
-        keys = sorted(list(script.obj.linkset_data) + list(script.obj.linkset_protected))
-        if count <= 0:
-            return keys[start:]
-        return keys[start:start + count]
+        return self._page(self._linkset_keys(script.obj), start, count)
 
     def ll_LinksetDataFindKeys(self, script, pattern, start, count):
-        # A pattern that nests a quantifier inside a quantified group can take exponential time in Python's
-        # backtracking engine (the grid uses a different one); such patterns match nothing here.
-        if len(pattern) > MAX_PATTERN_LEN or re.search(r"\([^()]*[*+][^()]*\)[*+{]", pattern):
-            return []
-        try:
-            rx = re.compile(pattern)
-        except re.error:
-            return []
-        keys = sorted(k for k in list(script.obj.linkset_data) + list(script.obj.linkset_protected) if rx.search(k))
-        return keys[start:start + count] if count > 0 else keys[start:]
+        return self._page(self._linkset_keys(script.obj, pattern), start, count)
 
     def ll_LinksetDataCountFound(self, script, pattern):
-        return len(self.ll_LinksetDataFindKeys(script, pattern, 0, 0))
+        return len(self._linkset_keys(script.obj, pattern))
 
     def ll_LinksetDataDeleteFound(self, script, pattern, password):
-        deleted = 0
-        for name in self.ll_LinksetDataFindKeys(script, pattern, 0, 0):
-            if name in script.obj.linkset_data:
-                del script.obj.linkset_data[name]
+        obj = script.obj
+        deleted = refused = 0
+        for name in self._linkset_keys(obj, pattern):
+            if name in obj.linkset_data:
+                del obj.linkset_data[name]
                 deleted += 1
-            elif name in script.obj.linkset_protected and script.obj.linkset_protected[name][1] == password:
-                del script.obj.linkset_protected[name]
+            elif obj.linkset_protected[name][1] == password:
+                del obj.linkset_protected[name]
                 deleted += 1
+            else:
+                refused += 1
         if deleted:
-            self._linkset_event(script.obj, 3, "", "")
-        return [deleted, 0]
+            self._linkset_event(obj, LINKSETDATA_MULTIDELETE, "", "")
+        return [deleted, refused]
 
     # --- randomness ------------------------------------------------------------
 
@@ -1150,18 +1281,16 @@ class Simulator(object):
         return self.new_key()
 
     def ll_ListRandomize(self, script, src, stride):
-        if stride < 1:
-            stride = 1
-        if len(src) % stride != 0:
+        pieces = pure.chunks(src, stride)
+        if pieces is None:
             return list(src)
-        chunks = [src[i:i + stride] for i in range(0, len(src), stride)]
-        self.rng.shuffle(chunks)
-        return [v for c in chunks for v in c]
+        self.rng.shuffle(pieces)
+        return [v for c in pieces for v in c]
 
     # --- rezzing ---------------------------------------------------------------
 
     def ll_RezObject(self, script, inventory, pos, vel, rot, param):
-        self.record(script, "llRezObject", inventory, pos, vel, rot, param)
+        self.record_call(script, "llRezObject", inventory, pos, vel, rot, param)
         if inventory in script.obj.inventory and script.obj.inventory[inventory][0] == INVENTORY_OBJECT:
             child = self.rez(inventory, owner=self.avatars.get(script.obj.owner))
             child.pos = pos

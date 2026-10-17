@@ -3,6 +3,9 @@
 Semantics implemented here (see skills/lsl-dev/references/lsl-for-ai.md):
 - strict types, implicit conversions only integer->float and string<->key;
 - both operands of a binary operator are evaluated, right one first;
+- function arguments and list elements are evaluated left to right, vector
+  components right to left (the grid documents neither: a script must not
+  depend on it);
 - && and || never short-circuit;
 - integer arithmetic wraps to 32 bits, division truncates, / and % by zero
   raise "Math Error";
@@ -12,8 +15,12 @@ Semantics implemented here (see skills/lsl-dev/references/lsl-for-ai.md):
 - jump/labels within a function or event handler.
 """
 
-from . import nodes as ast
-from .errors import ScriptError, UnsupportedError
+import sys
+import time as _time
+
+from . import nodes
+from .errors import ResetSignal, ScriptError, UnsupportedError
+from .lexer import tokenize
 from .parser import parse
 from .signatures import CONSTANTS
 from .values import (Vector, Rotation, binary, cast, coerce, default_value, truthy, type_of, unary, f32, NULL_KEY)
@@ -40,6 +47,8 @@ class StateChangeSignal(Exception):
 MAX_CALL_DEPTH = 150          # the grid dies with "Stack-Heap Collision" long before this
 MAX_QUEUE = 64                # events queued per script; more are dropped silently
 MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping
+MAX_HANDLER_SECONDS = 20.0    # wall-clock time per event handler, for builtins that cost more than a statement
+RECURSION_LIMIT = 2500        # Python frames allowed while a handler runs: enough for MAX_CALL_DEPTH
 
 
 class Script(object):
@@ -54,8 +63,9 @@ class Script(object):
         self.globals = {}
         self.state = "default"
         self.running = True            # llSetScriptState / run-time error
-        self.dead = False              # stopped by a run-time error
-        self.error = None              # ScriptError that killed it
+        self.dead = False              # stopped by a run-time error (recorded in sim.errors)
+        self.line = 0                  # script line of the statement being run, for error messages
+        self.code_size = sum(len(str(tok.value)) for tok in tokenize(source) if tok.kind != "eof")
         self.listens = {}              # handle -> SimpleNamespace(channel, name, id, msg, active)
         self.next_listen = 1
         self.timer_interval = 0.0
@@ -65,6 +75,7 @@ class Script(object):
         self.dropped_events = 0
         self.permissions = 0
         self.permissions_key = NULL_KEY
+        self.pending_permissions = (0, NULL_KEY)   # applied when run_time_permissions runs, as on the grid
         self.start_param = 0
         self.start_time = sim.time
         self.memory_limit = 65536
@@ -73,7 +84,11 @@ class Script(object):
         self.urls = set()
         self.depth = 0
         self.statements_run = 0
-        self.reset_globals()
+        self.deadline = float("inf")
+        self._guard(self.reset_globals)
+
+    def __repr__(self):
+        return "Script(%s)" % self.name
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -87,7 +102,7 @@ class Script(object):
 
     def reset(self):
         """llResetScript / Reset Scripts: globals, listens, timers, queue, default state."""
-        self.release_listens()
+        self.listens = {}
         self.timer_interval = 0.0
         self.timer_due = None
         self.sensor_repeat = None
@@ -96,56 +111,71 @@ class Script(object):
         self.permissions_key = NULL_KEY
         self.state = "default"
         self.dead = False
-        self.error = None
         self.running = True
         self.start_time = self.sim.time
         for url in list(self.urls):
-            self.sim.release_url(self, url)
-        self.reset_globals()
+            self.sim.ll_ReleaseURL(self, url)
+        self._guard(self.reset_globals)
         self.post("state_entry", [])
-
-    def release_listens(self):
-        self.listens = {}
 
     def handles_event(self, name):
         state_node = self.program.states.get(self.state)
         return state_node is not None and name in state_node.events
 
     def post(self, name, args, detected=None):
-        """Queue an event. The queue holds 64 events; more are dropped silently."""
-        if not self.running or self.dead:
-            return False
-        if not self.handles_event(name):
-            return False
+        """Queue an event. Nothing is queued for a stopped or dead script, for an event the current
+        state does not handle, or when the queue already holds MAX_QUEUE events (dropped_events counts those)."""
+        if not self.running or self.dead or not self.handles_event(name):
+            return
         if len(self.queue) >= MAX_QUEUE:
             self.dropped_events += 1
-            return False
+            return
         self.queue.append((name, list(args), list(detected or [])))
-        return True
 
     def dispatch(self, name, args, detected):
-        state_node = self.program.states[self.state]
-        handler = state_node.events.get(name)
-        if handler is None:
-            return
+        """Run one event handler. A script failure kills the script instead of raising, as on the grid."""
+        handler = self.program.states[self.state].events[name]
+        if name == "run_time_permissions":
+            self.permissions, self.permissions_key = self.pending_permissions
         self.detected = detected
-        self.statements_run = 0
         try:
-            self.call_function(handler, args)
-        except StateChangeSignal as change:
-            self.change_state(change.name)
-        except ScriptError as err:
-            self.die(err)
-        except (ArithmeticError, ValueError, RecursionError, MemoryError) as exc:
-            # a Python limit reached by a script value: report it as a script error, never a traceback
-            self.die(ScriptError("Script run-time error", "%s: %s" % (type(exc).__name__, exc)))
+            self._guard(lambda: self._run_event(handler, args))
         finally:
             self.detected = []
+        if not self.dead and self.memory_used() > self.memory_limit:
+            self.die(ScriptError("Stack-Heap Collision", "about %d bytes in use" % self.memory_used()))
+
+    def _run_event(self, handler, args):
+        try:
+            self.call_function(handler, args, event=True)
+        except StateChangeSignal as change:
+            self.detected = []            # llDetected* is for the event that detected, not for state_exit
+            self.change_state(change.name)
+
+    def _guard(self, action):
+        """Run action() under the script's limits; ScriptError and Python failures kill the script."""
+        self.statements_run = 0
+        self.deadline = _time.monotonic() + MAX_HANDLER_SECONDS
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(max(old_limit, RECURSION_LIMIT))
+        try:
+            action()
+        except ScriptError as err:
+            self.die(err)
+        except RecursionError:
+            self.die(ScriptError("Stack-Heap Collision", "nesting too deep"))
+        except (ResetSignal, UnsupportedError):
+            raise
+        except Exception as exc:      # a Python limit or type error reached by a script value, never a traceback
+            self.die(ScriptError("Script run-time error", "%s: %s" % (type(exc).__name__, exc)))
+        finally:
+            sys.setrecursionlimit(old_limit)
 
     def die(self, err):
+        if not err.line:
+            err.line = self.line
         self.dead = True
-        self.error = err
-        self.sim.record_error(self, err)
+        self.sim.errors.append((self.name, err))
 
     def change_state(self, name):
         if name == self.state:
@@ -159,7 +189,7 @@ class Script(object):
             except StateChangeSignal:
                 pass
         self.queue = []
-        self.release_listens()
+        self.listens = {}
         self.sensor_repeat = None
         self.state = name
         # state_entry of the new state runs next, ahead of anything else
@@ -168,7 +198,7 @@ class Script(object):
 
     # --- functions -----------------------------------------------------------
 
-    def call_function(self, func, args):
+    def call_function(self, func, args, event=False):
         if len(args) != len(func.params):
             raise ScriptError("Type mismatch", "%s expects %d arguments" % (func.name, len(func.params)))
         scope = {}
@@ -181,6 +211,8 @@ class Script(object):
             self.exec_block(func.body, [scope])
         except ReturnSignal as ret:
             if func.return_type is None:
+                if event and ret.value is not None:
+                    raise ScriptError("Script run-time error", "return with a value in an event handler")
                 return None
             if ret.value is None:
                 return default_value(func.return_type)
@@ -213,52 +245,55 @@ class Script(object):
     @staticmethod
     def find_label(statements, label):
         for i, stmt in enumerate(statements):
-            if isinstance(stmt, ast.Label) and stmt.name == label:
+            if isinstance(stmt, nodes.Label) and stmt.name == label:
                 return i
         return None
 
     def exec_stmt(self, stmt, scopes):
+        self.line = stmt.line
         self.statements_run += 1
         if self.statements_run > MAX_STATEMENTS:
             raise ScriptError("Script run-time error", "statement budget exhausted (infinite loop?)")
+        if self.statements_run & 4095 == 0 and _time.monotonic() > self.deadline:
+            raise ScriptError("Script run-time error", "lsltest: the handler ran over %d seconds" % MAX_HANDLER_SECONDS)
         kind = type(stmt)
-        if kind is ast.ExprStatement:
+        if kind is nodes.ExprStatement:
             self.eval_expr(stmt.expr, scopes)
-        elif kind is ast.Declaration:
+        elif kind is nodes.Declaration:
             value = default_value(stmt.type)
             if stmt.value is not None:
                 value = coerce(self.eval_expr(stmt.value, scopes), stmt.type)
             scopes[-1][stmt.name] = value
-        elif kind is ast.Block:
+        elif kind is nodes.Block:
             self.exec_block(stmt, scopes)
-        elif kind is ast.If:
+        elif kind is nodes.If:
             if truthy(self.eval_expr(stmt.cond, scopes)):
                 self.exec_stmt(stmt.then, scopes)
             elif stmt.otherwise is not None:
                 self.exec_stmt(stmt.otherwise, scopes)
-        elif kind is ast.While:
+        elif kind is nodes.While:
             while truthy(self.eval_expr(stmt.cond, scopes)):
                 self.exec_stmt(stmt.body, scopes)
-        elif kind is ast.DoWhile:
+        elif kind is nodes.DoWhile:
             while True:
                 self.exec_stmt(stmt.body, scopes)
                 if not truthy(self.eval_expr(stmt.cond, scopes)):
                     break
-        elif kind is ast.For:
+        elif kind is nodes.For:
             for expr in stmt.init:
                 self.eval_expr(expr, scopes)
             while truthy(self.eval_expr(stmt.cond, scopes)):
                 self.exec_stmt(stmt.body, scopes)
                 for expr in stmt.step:
                     self.eval_expr(expr, scopes)
-        elif kind is ast.Return:
+        elif kind is nodes.Return:
             value = None if stmt.value is None else self.eval_expr(stmt.value, scopes)
             raise ReturnSignal(value)
-        elif kind is ast.StateChange:
+        elif kind is nodes.StateChange:
             raise StateChangeSignal(stmt.name)
-        elif kind is ast.Jump:
+        elif kind is nodes.Jump:
             raise JumpSignal(stmt.label)
-        elif kind is ast.Label or kind is ast.Empty:
+        elif kind is nodes.Label or kind is nodes.Empty:
             pass
         else:
             raise UnsupportedError("statement %s" % kind.__name__)
@@ -296,10 +331,10 @@ class Script(object):
         if target.member is None:
             return self.store(target.name, value, scopes)
         current = self.lookup(target.name, scopes)
+        self.member(current, target.member)          # Type mismatch when the member does not exist
         component = coerce(value, "float")
-        index = "xyzs".index(target.member)
         parts = list(current)
-        parts[index] = component
+        parts["xyzs".index(target.member)] = component
         rebuilt = Vector(*parts) if isinstance(current, Vector) else Rotation(*parts)
         self.store(target.name, rebuilt, scopes)
         return component
@@ -318,36 +353,36 @@ class Script(object):
         if scopes is None:
             scopes = []
         kind = type(expr)
-        if kind is ast.Literal:
+        if kind is nodes.Literal:
             value = expr.value
             return f32(value) if isinstance(value, float) else value
-        if kind is ast.Name:
+        if kind is nodes.Name:
             return self.read_target(expr, scopes)
-        if kind is ast.Binary:
+        if kind is nodes.Binary:
             # right operand first, then left: LSL evaluates right to left and never short-circuits
             right = self.eval_expr(expr.right, scopes)
             left = self.eval_expr(expr.left, scopes)
             return binary(expr.op, left, right)
-        if kind is ast.Unary:
+        if kind is nodes.Unary:
             return unary(expr.op, self.eval_expr(expr.operand, scopes))
-        if kind is ast.Assign:
+        if kind is nodes.Assign:
             value = self.eval_expr(expr.value, scopes)
             if expr.op != "=":
                 current = self.read_target(expr.target, scopes)
                 value = binary(expr.op[0], current, value)
             return self.write_target(expr.target, value, scopes)
-        if kind is ast.IncDec:
+        if kind is nodes.IncDec:
             current = self.read_target(expr.target, scopes)
             updated = binary("+" if expr.op == "++" else "-", current, 1)
             self.write_target(expr.target, updated, scopes)
             return updated if expr.prefix else current
-        if kind is ast.Cast:
+        if kind is nodes.Cast:
             return cast(self.eval_expr(expr.expr, scopes), expr.type)
-        if kind is ast.VectorLit:
+        if kind is nodes.VectorLit:
             items = [coerce(self.eval_expr(item, scopes), "float") for item in reversed(expr.items)]
             items.reverse()
             return Vector(*items) if len(items) == 3 else Rotation(*items)
-        if kind is ast.ListLit:
+        if kind is nodes.ListLit:
             items = []
             for item in expr.items:
                 value = self.eval_expr(item, scopes)
@@ -355,7 +390,7 @@ class Script(object):
                     raise ScriptError("Lists may not contain lists")
                 items.append(value)
             return items
-        if kind is ast.Call:
+        if kind is nodes.Call:
             return self.call(expr, scopes)
         raise UnsupportedError("expression %s" % kind.__name__)
 
@@ -369,8 +404,8 @@ class Script(object):
     # --- introspection for the simulator ---------------------------------
 
     def memory_used(self):
-        """Rough estimate of the bytes this script uses, for llGetFreeMemory."""
-        code = len(self.source)
+        """Rough estimate of the bytes this script uses (code without comments, globals), for llGetFreeMemory."""
+        code = self.code_size
         data = 0
         for value in self.globals.values():
             data += value_size(value)

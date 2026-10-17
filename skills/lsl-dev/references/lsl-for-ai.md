@@ -108,6 +108,12 @@ code written by people, and models, who know C, JavaScript or Lua.
   never fail: an element of another type is cast when possible, otherwise the
   result is 0 or ""; an out-of-range index returns 0 or "" with no error. A
   float read with `llList2Integer` is truncated, a string "abc" gives 0.
+- `llList2Vector` and `llList2Rot` convert nothing: an element that is not a
+  vector (rotation), the string "<1,2,3>" included, gives ZERO_VECTOR
+  (ZERO_ROTATION). Cast `llList2String` to read a vector stored as text.
+  (LlList2Vector)
+- `llHMAC(key, message, algorithm)` returns the Base64 of the digest;
+  algorithms md5, sha1, sha224, sha256, sha384, sha512. (LlHMAC)
   Check with `llGetListEntryType`. (LlList2Integer, LlList2Float, LlList2String)
 - `llListFindList` is type-strict and case-sensitive: `"1"` does not match
   `1`, a string UUID does not match a key UUID. Returns -1 if absent. The
@@ -196,6 +202,10 @@ code written by people, and models, who know C, JavaScript or Lua.
   removed on state change and reset. `llListen(0, "", NULL_KEY, "")` is a
   known lag source. The listening position is the root prim. (LlListen, Listen)
 - Viewer chat on negative channels is limited to 254 bytes. (LlSay, LlListen)
+- Every `llDialog` mistake (empty or long message, more than 12 buttons, a
+  label not 1 to 24 bytes, a button that is not a string) is a DEBUG_CHANNEL
+  shout, not a run-time error: no dialog shows and the script goes on.
+  (LlDialog)
 - `llDialog`: at most 12 buttons, each label 1 to 24 bytes, message under 512
   bytes and not empty, sleeps 1.0 s. Buttons fill from the bottom row (1-3
   bottom, 4-6 above). The answer arrives as chat on the channel from the
@@ -243,6 +253,8 @@ code written by people, and models, who know C, JavaScript or Lua.
   interval means it never fires. It survives state changes, not resets. The
   timer waits for the running event to finish. (LlSetTimerEvent, Timer)
 - `llSleep` sleeps at least until the next server frame (1/45 s). (LlSleep)
+- `llGetWallclock` is seconds since midnight Pacific time (SLT), whole
+  seconds; `llGetGMTclock` is UTC. (LlGetWallclock)
 - Forced delays after a call, in seconds: `llEmail` 20.0, `llLoadURL` 10.0,
   `llTeleportAgentHome` 5.0, `llGiveInventoryList` 3.0, `llInstantMessage`
   2.0, `llDialog` and `llTextBox` 1.0, `llSetPos`, `llSetRot`, `llSetTexture`,
@@ -255,7 +267,8 @@ code written by people, and models, who know C, JavaScript or Lua.
 
 ## 10. Sensors
 
-- `llSensor` range is 0 to 96 m, arc 0 to PI, at most 32 results, nearest
+- `llSensor` range is 0 to 96 m, arc 0 to PI, at most 32 results (16 before
+  March 2024), nearest
   first. It does not cross region borders, does not detect attachments, and
   an object never detects itself. Nothing found raises `no_sensor`, not an
   empty `sensor`. (LlSensor, Sensor)
@@ -330,6 +343,10 @@ Do not present these as facts without checking in-world:
 
 - Runtime integer overflow behaviour in arithmetic (only literal wrapping
   is documented).
+- The evaluation order of function arguments, list elements and vector
+  components (only "operands" are documented as right to left). Never let
+  two of them write the same variable. lsltest evaluates arguments and list
+  elements left to right and vector components right to left.
 - Minimum timer interval and whether queued timer events coalesce.
 - Maximum `num_detected` for touch and collision events.
 - Default values of uninitialized local variables.

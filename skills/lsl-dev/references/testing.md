@@ -44,67 +44,110 @@ class DoorTest(LslTestCase):
 
 Run with `python -m lsltest tests/` (or `lsltest tests/` when installed).
 `lsltest script.lsl` with no test does a smoke run: state_entry, one touch,
-and prints what the simulator saw.
+then it prints the state, the chat, dialogs, textboxes, link messages, HTTP
+requests, emails, recorded calls and errors.
 
 Words: the *grid* is Second Life; the *simulator* is `self.sim`, the fake
-one lsltest runs the script in. Every method below runs the queued events
-before it returns, so an assertion right after it sees the result.
+one lsltest runs the script in. Every method that injects an event or moves
+the clock runs the queued events before it returns, so an assertion right
+after it sees the result. `LslTestCase.setUp` creates the simulator: a test
+class that overrides `setUp` calls the inherited one first.
 
 What you can drive: `sim.start()` (state_entry of every script, like a fresh
-rez), `sim.touch(avatar)` (the owner when omitted), `sim.say(avatar, channel,
-text)`, `sim.dialog_reply(avatar, button)`, `sim.textbox_reply(avatar, text)`,
-`sim.tick(seconds)` (the clock moves, timers and repeating sensors fire),
-`sim.changed(flags)`, `sim.on_rez(param)`, `sim.attach(avatar)` /
-`sim.detach()`, `sim.link_message(num, text, id)`, `sim.money(avatar,
-amount)`, `sim.reset(script)`, `sim.http_respond(status, body)` for the
-oldest unanswered `llHTTPRequest`, `sim.http_handler = lambda request: (200,
-body)` to answer every request during the run, `sim.http_in_request(url,
-method, body)` for the script's own URL, `sim.notecard(name, text)` to put a
-notecard in the object, `sim.permission_policy` (True, False, or a function
-of avatar and mask), `sim.avatar(name, group=...)` to create other
-residents. `sim.owner` is the avatar that owns every object by default and
-`sim.constants["CHANGED_INVENTORY"]` gives any LSL constant.
+rez), `sim.touch(avatar)` (the owner when omitted; touch_start, touch and
+touch_end run one after the other), `sim.collision(avatar)`, `sim.say(avatar,
+channel, text)`, `sim.dialog_reply(avatar, button)`, `sim.textbox_reply(avatar,
+text)`, `sim.tick(seconds)` (the clock moves, timers and repeating sensors
+fire), `sim.changed(flags)`, `sim.on_rez(start_param)`, `sim.attach(avatar)` /
+`sim.detach()`, `sim.link_message(num, text, id, sender=0)` (a message from
+another prim), `sim.money(avatar, amount)`, `sim.reset(script)`,
+`sim.http_respond(status, body)` for the oldest unanswered `llHTTPRequest`,
+`sim.http_handler = lambda request: (200, body)` to answer every request
+during the run (return None to leave one pending), `sim.http_in_request(url,
+method, body)` for the script's own URL (returns `(status, body,
+content_type)`: 404 for an unknown URL, 500 when the script did not answer),
+`sim.notecard(name, text, cached=False)` to put a notecard in the object,
+`sim.permission_policy` (True, False, or a function of avatar and mask),
+`sim.avatar(name, group=...)` to create other residents, `sim.rez(name, desc,
+owner, group)` for more objects (`obj=` on `load` and on the drivers picks
+one). `sim.owner` is the Avatar that owns every object by default, the
+default object is `sim.objects[0]` (`.name`, `.desc`, `.group`, `.pos`,
+`.text`), `sim.constants["CHANGED_INVENTORY"]` gives any LSL constant.
+Attributes named `avatar`, `owner`, `speaker` and `target` on records hold
+keys; `sim.owner` and the return of `sim.avatar()` are Avatar objects (use
+`.key`).
 
 What you can assert: `assertSaid(text, channel=0)` and `assertNotSaid` look
-at public script chat only (`llSay`, `llWhisper`, `llShout`, `llRegionSay`,
-`llRegionSayTo`), never at what the test itself said through `sim.say`;
-`assertOwnerSaid` / `assertNotOwnerSaid` for `llOwnerSay`;
-`assertSaidTo(avatar, text)` for `llRegionSayTo` and `llInstantMessage`;
-`assertDialog(buttons=, contains=)` (returns the dialog: `.channel`,
-`.buttons`, `.text`), `assertListening(channel)`, `assertNoListens()`,
-`assertHttpOut(url_contains=, method=, body_contains=)` (returns the request:
-`.url`, `.method`, `.body`, `.params`), `assertNoHttpOut()`,
-`assertLinkMessage(num=, str_contains=)`, `assertCalled("llSetColor", args...)`
-for builtins the simulator does not model (it records them instead of
-failing), `assertNotCalled`, `assertState(script, "name")`,
-`assertGlobal(script, "name", value)`, `assertNoErrors()`,
-`assertError("Math Error")`. The raw records are on the simulator too:
-`sim.chat` (`.channel`, `.text`, `.kind`, `.speaker_name`), `sim.dialogs`,
-`sim.http_out`, `sim.link_messages`, `sim.emails`, `sim.calls`, `sim.errors`.
+at script chat on a channel (`llSay`, `llWhisper`, `llShout`, `llRegionSay`,
+`llRegionSayTo`; `channel=None` for any channel), never at what the test
+itself said through `sim.say`; `assertOwnerSaid` / `assertNotOwnerSaid` for
+`llOwnerSay`; `assertSaidTo(avatar, text)` for `llRegionSayTo` and
+`llInstantMessage`; every text assertion takes `exact=True` to match the
+whole line. `assertDialog(buttons=, contains=, avatar=)` returns the dialog
+(`.avatar`, `.text`, `.buttons`, `.channel`, `.script`), `assertNoDialog()`,
+`assertListening(channel, script=)`, `assertNoListens(script=)`,
+`assertHttpOut(url_contains=, method=, body_contains=)` returns the request
+(`.url`, `.method`, `.body`, `.params`, `.script`), `assertNoHttpOut()`,
+`assertLinkMessage(num=, str_contains=)` returns it (`.script`, `.sender`,
+`.link`, `.num`, `.str`, `.id`), `assertCalled("llSetColor", args...)` for
+builtins whose call is only recorded (every unmodelled one, plus
+`llTakeControls`, `llReleaseControls`, `llStartAnimation`,
+`llStopAnimation`, `llGiveInventory`, `llDie`, `llRezObject`),
+`assertNotCalled`, `assertState(script, "name")`, `assertGlobal(script,
+"name", value)` (a float is compared at single precision), `assertNoErrors()`,
+`assertError("Math Error", script)` returns the error (`.kind`, `.detail`,
+`.line`). The raw records: `sim.chat` (`.channel`, `.text`, `.kind`,
+`.speaker`, `.speaker_name`, `.target`, `.time`; kinds `say`, `whisper`,
+`shout`, `regionsay`, `regionsayto`, `ownersay`, `im`, `debug` for the grid's
+DEBUG_CHANNEL shouts such as llDialog errors, `avatar` for `sim.say`),
+`sim.dialogs`, `sim.textboxes`, `sim.http_out`, `sim.link_messages`,
+`sim.emails` (`.to`, `.subject`, `.body`, `.object`), `sim.calls` (tuples
+`(script_name, builtin, args)`), `sim.errors` (tuples `(script_name,
+ScriptError)`), `script.dropped_events`.
 
 What the simulator enforces, like the grid: strict types and implicit
-conversions, both operands of `&&` and `||` run, right operand first, integer
-division truncates, `/` and `%` by zero kill the script with "Math Error",
-32-bit integer wrap, single-precision floats, 64 queued events then silent
-drops, 65 listens then "Too Many Listens", a function call nesting over 150
-or a string or list over 65536 items dies with "Stack-Heap Collision",
-dialogs with more than 12 buttons or labels over 24 bytes fail, chat is cut
-at 1024 bytes, hover text at 254, incoming HTTP bodies at 2048, 25
-`llHTTPRequest` per 20 seconds then `NULL_KEY`, linkset data at 128 KiB,
-`llSleep`, `llDialog` (1 s), `llInstantMessage` (2 s), `llEmail` (20 s) and
-`llSetPos` (0.2 s) move the clock, timers shorter than one frame (0.022 s)
-are rounded up, a state change releases listens and the repeating sensor but
-not the timer, a handler running over two million statements is killed as a
-runaway.
+conversions, both operands of `&&` and `||` run, right operand first, an
+integer mixed with a float goes through single precision, integer division
+truncates, `/` and `%` by zero kill the script with "Math Error", 32-bit
+integer wrap, 64 queued events then silent drops, 65 listens then "Too Many
+Listens" (the same filter again returns the existing handle), about 64 KiB
+of memory for code and globals then "Stack-Heap Collision", `llDialog`
+errors (empty or long message, more than 12 buttons, labels not 1 to 24
+bytes) are shouted on DEBUG_CHANNEL and no dialog shows, chat is cut at 1024
+bytes, hover text at 254, incoming HTTP bodies at 2048 bytes, HTTP responses
+at HTTP_BODY_MAXLENGTH (2048 by default; the metadata then starts with
+`HTTP_BODY_TRUNCATED` and the limit), 25 `llHTTPRequest` per 20 seconds then
+`NULL_KEY`, a Content-Type custom header is a run-time error, `http_response`
+and `dataserver` reach every script of the prim, permissions arrive with
+`run_time_permissions` and not inside the calling handler,
+`llGetNotecardLineSync` answers NAK until the notecard was read once
+asynchronously (or `sim.notecard(..., cached=True)`), HTTP-in URLs die on rez
+and on region restart, link messages are delivered by prim (LINK_ALL_OTHERS
+from the only prim reaches nobody, the sender number is 0 there), sensors
+return the nearest 32, linkset data at 128 KiB, `llSleep`, `llDialog` (1 s),
+`llInstantMessage` (2 s), `llEmail` (20 s), `llSetPos` and `llSetRot`
+(0.2 s), notecard and agent-data reads (0.1 s), among others, move the
+clock; timers shorter than one frame (0.022 s) are rounded up; a state
+change releases listens and the repeating sensor but not the timer; a value
+returned from an event handler is an error.
 
-What it does not model: physics, movement, rendering, region crossings,
-avatar animations beyond recording the call, prim parameters (recorded),
-sensors beyond distance to the avatars and objects you created, money beyond
-the event, memory beyond a rough count of the globals. A builtin it does not
-model is recorded with its arguments and returns the type's default value;
-`strict = True` on the test class (or `Simulator(strict=True)`) raises
-instead, when a test must not pass by accident. A `tick()` that would fire
-more than 100000 timers raises `RuntimeError`: shorten the tick or the timer.
+lsltest's own guards, not grid limits: a call depth of 150 (the event
+handler counts as the first), a string or list over 65536 items, two million
+statements or 20 seconds in one handler, 10000 rounds of scripts posting
+events to each other in one `run()`, 100000 timer or sensor steps in one
+`tick()`, 100000 records of one kind (chat lines, requests...). The first
+three kill the script with a `ScriptError`; the `run()` and `tick()` guards
+raise `RuntimeError` in the test: shorten the tick or the timer, or fix the
+loop. Error messages name the script line.
+
+What it does not model: physics, movement, chat range (every listener in the
+region hears), rendering, region crossings, avatar animations beyond
+recording the call, prim parameters (recorded), sensors beyond distance to
+the avatars and objects you created, money beyond the event, memory beyond a
+rough count of the code and the globals. A builtin it does not model is
+recorded with its arguments and returns the type's default value; `strict =
+True` on the test class (or `Simulator(strict=True)`) raises instead, when a
+test must not pass by accident.
 
 ## 2. Read it like the simulator does
 

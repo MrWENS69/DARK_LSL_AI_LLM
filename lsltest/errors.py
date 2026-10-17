@@ -15,13 +15,27 @@ class UnsupportedError(Exception):
 
 
 class ScriptError(Exception):
-    """A Second Life script run-time error: the script stops, as in-world.
+    """A Second Life script run-time error: the script stops, as on the grid.
 
     kind is the in-world message: "Math Error", "Stack-Heap Collision",
     "Too Many Listens", "Lists may not contain lists", "Bounds Check Error".
+    line is the script line that was running, set by the interpreter when known.
     """
 
-    def __init__(self, kind, detail=""):
-        Exception.__init__(self, "Script run-time error: %s%s" % (kind, (" (" + detail + ")") if detail else ""))
+    def __init__(self, kind, detail="", line=0):
+        Exception.__init__(self, kind)
         self.kind = kind
         self.detail = detail
+        self.line = line
+
+    def __str__(self):
+        text = "Script run-time error: " + self.kind
+        if self.detail:
+            text += " (" + self.detail + ")"
+        if self.line:
+            text += " at line %d" % self.line
+        return text
+
+
+class ResetSignal(Exception):
+    """llResetScript was called: unwinds to the simulator, which restarts the script."""

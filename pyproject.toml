@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lslcheck"
-version = "1.2.0"
+dynamic = ["version"]
 description = "Run lslint over Second Life LSL scripts: GCC-style output, JSON, exit codes, automatic download of the lslint binary"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -28,6 +28,9 @@ lsltest = "lsltest.__main__:main"
 [tool.setuptools]
 py-modules = ["lslcheck"]
 packages = ["lsltest"]
+
+[tool.setuptools.dynamic]
+version = { attr = "lsltest._version.__version__" }
 
 [tool.setuptools.package-data]
 lsltest = ["data/builtins.txt"]

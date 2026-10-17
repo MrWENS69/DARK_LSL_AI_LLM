@@ -15,12 +15,16 @@ Precedence, lowest to highest, as declared in lslmini.y:
 A '<' at the start of an operand opens a vector or rotation literal.
 """
 
-from . import nodes as ast
+import sys
+
+from . import nodes
 from .errors import LslSyntaxError
 from .lexer import tokenize
 
 TYPES = ("integer", "float", "string", "key", "vector", "rotation", "quaternion", "list")
 
+MAX_NESTING = 200             # nested expressions or blocks a script may have
+RECURSION_LIMIT = 3000        # Python frames the parser may use: MAX_NESTING levels and some margin
 _BINARY_LEVELS = [
     ("&&", "||"),
     ("|",),
@@ -37,6 +41,7 @@ _ASSIGN_OPS = ("=", "+=", "-=", "*=", "/=", "%=")
 
 class Parser(object):
     def __init__(self, source):
+        self.nesting = 0
         self.tokens = tokenize(source)
         self.pos = 0
 
@@ -115,7 +120,7 @@ class Parser(object):
             states[s.name] = s
         if not self.at("eof"):
             self.error("unexpected %r after the last state" % self.tok.value)
-        return ast.Program(globals_, functions, states)
+        return nodes.Program(globals_, functions, states)
 
     def parse_function(self):
         start = self.tok
@@ -136,7 +141,7 @@ class Parser(object):
                 break
         self.expect_op(")")
         body = self.parse_block()
-        return ast.Function(name, return_type, params, body, start.line, start.col)
+        return nodes.Function(name, return_type, params, body, start.line, start.col)
 
     def parse_state(self):
         start = self.tok
@@ -160,11 +165,20 @@ class Parser(object):
                 self.error("event %s handled twice in state %s" % (handler.name, name))
             events[handler.name] = handler
         self.expect_op("}")
-        return ast.State(name, events, start.line, start.col)
+        return nodes.State(name, events, start.line, start.col)
 
     # --- statements ----------------------------------------------------------
 
     def parse_block(self):
+        self.nesting += 1
+        if self.nesting > MAX_NESTING:
+            self.error("blocks nested too deeply")
+        try:
+            return self._parse_block()
+        finally:
+            self.nesting -= 1
+
+    def _parse_block(self):
         start = self.expect_op("{")
         statements = []
         while not self.at_op("}"):
@@ -172,7 +186,7 @@ class Parser(object):
                 self.error("unterminated block", start)
             statements.append(self.parse_statement())
         self.expect_op("}")
-        return ast.Block(statements, start.line, start.col)
+        return nodes.Block(statements, start.line, start.col)
 
     def parse_declaration(self):
         start = self.tok
@@ -182,21 +196,21 @@ class Parser(object):
         if self.at_op("="):
             self.advance()
             value = self.parse_expression()
-        return ast.Declaration(type_, name, value, start.line, start.col)
+        return nodes.Declaration(type_, name, value, start.line, start.col)
 
     def parse_statement(self):
         tok = self.tok
         line, col = tok.line, tok.col
         if self.at_op(";"):
             self.advance()
-            return ast.Empty(line, col)
+            return nodes.Empty(line, col)
         if self.at_op("{"):
             return self.parse_block()
         if self.at_op("@"):
             self.advance()
             name = self.expect("ident").value
             self.expect_op(";")
-            return ast.Label(name, line, col)
+            return nodes.Label(name, line, col)
         if tok.kind == "keyword":
             kw = tok.value
             if kw in TYPES:
@@ -213,13 +227,13 @@ class Parser(object):
                 if self.at("keyword", "else"):
                     self.advance()
                     otherwise = self.parse_statement()
-                return ast.If(cond, then, otherwise, line, col)
+                return nodes.If(cond, then, otherwise, line, col)
             if kw == "while":
                 self.advance()
                 self.expect_op("(")
                 cond = self.parse_expression()
                 self.expect_op(")")
-                return ast.While(cond, self.parse_statement(), line, col)
+                return nodes.While(cond, self.parse_statement(), line, col)
             if kw == "do":
                 self.advance()
                 body = self.parse_statement()
@@ -228,7 +242,7 @@ class Parser(object):
                 cond = self.parse_expression()
                 self.expect_op(")")
                 self.expect_op(";")
-                return ast.DoWhile(body, cond, line, col)
+                return nodes.DoWhile(body, cond, line, col)
             if kw == "for":
                 self.advance()
                 self.expect_op("(")
@@ -238,14 +252,14 @@ class Parser(object):
                 self.expect_op(";")
                 step = self.parse_expression_list(")")
                 self.expect_op(")")
-                return ast.For(init, cond, step, self.parse_statement(), line, col)
+                return nodes.For(init, cond, step, self.parse_statement(), line, col)
             if kw == "return":
                 self.advance()
                 value = None
                 if not self.at_op(";"):
                     value = self.parse_expression()
                 self.expect_op(";")
-                return ast.Return(value, line, col)
+                return nodes.Return(value, line, col)
             if kw == "state":
                 self.advance()
                 if self.at("keyword", "default"):
@@ -254,19 +268,19 @@ class Parser(object):
                 else:
                     name = self.expect("ident").value
                 self.expect_op(";")
-                return ast.StateChange(name, line, col)
+                return nodes.StateChange(name, line, col)
             if kw == "jump":
                 self.advance()
                 name = self.expect("ident").value
                 self.expect_op(";")
-                return ast.Jump(name, line, col)
+                return nodes.Jump(name, line, col)
             if kw == "else":
                 self.error("else without if")
             if kw == "default":
                 self.error("default is a state, not a statement")
         expr = self.parse_expression()
         self.expect_op(";")
-        return ast.ExprStatement(expr, line, col)
+        return nodes.ExprStatement(expr, line, col)
 
     def parse_expression_list(self, terminator):
         items = []
@@ -292,7 +306,7 @@ class Parser(object):
             if target is not None and self.tok.kind == "op" and self.tok.value in _ASSIGN_OPS:
                 op_tok = self.advance()
                 value = self.parse_assignment()
-                return ast.Assign(op_tok.value, target, value, op_tok.line, op_tok.col)
+                return nodes.Assign(op_tok.value, target, value, op_tok.line, op_tok.col)
             self.pos = save
         return self.parse_binary(0)
 
@@ -305,7 +319,7 @@ class Parser(object):
         if self.at_op(".") and self.peek().kind == "ident":
             self.advance()
             member = self.advance().value
-        return ast.Name(tok.value, member, tok.line, tok.col)
+        return nodes.Name(tok.value, member, tok.line, tok.col)
 
     def parse_binary(self, level):
         if level >= len(_BINARY_LEVELS):
@@ -315,20 +329,31 @@ class Parser(object):
         while self.tok.kind == "op" and self.tok.value in ops:
             op_tok = self.advance()
             right = self.parse_binary(level + 1)
-            left = ast.Binary(op_tok.value, left, right, op_tok.line, op_tok.col)
+            left = nodes.Binary(op_tok.value, left, right, op_tok.line, op_tok.col)
         return left
 
     def parse_unary(self):
+        # every nesting level of an expression passes through here: bound it so that a hostile
+        # script cannot exhaust the Python stack, whatever the platform's limit is
+        self.nesting += 1
+        if self.nesting > MAX_NESTING:
+            self.error("expression nested too deeply")
+        try:
+            return self._parse_unary()
+        finally:
+            self.nesting -= 1
+
+    def _parse_unary(self):
         tok = self.tok
         if self.at_op("-", "!", "~"):
             self.advance()
-            return ast.Unary(tok.value, self.parse_unary(), tok.line, tok.col)
+            return nodes.Unary(tok.value, self.parse_unary(), tok.line, tok.col)
         if self.at_op("++", "--"):
             self.advance()
             target = self.parse_lvalue_opt()
             if target is None:
                 self.error("%s needs a variable" % tok.value, tok)
-            return ast.IncDec(tok.value, target, True, tok.line, tok.col)
+            return nodes.IncDec(tok.value, target, True, tok.line, tok.col)
         if self.at_op("(") and self.peek().kind == "keyword" and self.peek().value in TYPES and self.peek(2).kind == "op" and self.peek(2).value == ")":
             self.advance()
             type_ = self.type_name()
@@ -336,10 +361,10 @@ class Parser(object):
             # (type) applies to a unary operand: a negative literal, a postfix expression or a parenthesis
             if self.at_op("-"):
                 minus = self.advance()
-                operand = ast.Unary("-", self.parse_postfix(), minus.line, minus.col)
+                operand = nodes.Unary("-", self.parse_postfix(), minus.line, minus.col)
             else:
                 operand = self.parse_postfix()
-            return ast.Cast(type_, operand, tok.line, tok.col)
+            return nodes.Cast(type_, operand, tok.line, tok.col)
         return self.parse_postfix()
 
     def parse_postfix(self):
@@ -352,7 +377,7 @@ class Parser(object):
             return expr
         if tok.kind == "int" or tok.kind == "float" or tok.kind == "string":
             self.advance()
-            return ast.Literal(tok.value, line, col)
+            return nodes.Literal(tok.value, line, col)
         if self.at_op("<"):
             self.advance()
             items = [self.parse_vector_component()]
@@ -362,28 +387,28 @@ class Parser(object):
             self.expect_op(">")
             if len(items) not in (3, 4):
                 self.error("a vector has 3 components, a rotation 4", tok)
-            return ast.VectorLit(items, line, col)
+            return nodes.VectorLit(items, line, col)
         if self.at_op("["):
             self.advance()
             items = self.parse_expression_list("]")
             self.expect_op("]")
-            return ast.ListLit(items, line, col)
+            return nodes.ListLit(items, line, col)
         if tok.kind == "ident":
             if self.peek().kind == "op" and self.peek().value == "(":
                 self.advance()
                 self.advance()
                 args = self.parse_expression_list(")")
                 self.expect_op(")")
-                return ast.Call(tok.value, args, line, col)
+                return nodes.Call(tok.value, args, line, col)
             target = self.parse_lvalue_opt()
             if self.at_op("++", "--"):
                 op_tok = self.advance()
-                return ast.IncDec(op_tok.value, target, False, line, col)
+                return nodes.IncDec(op_tok.value, target, False, line, col)
             if self.tok.kind == "op" and self.tok.value in _ASSIGN_OPS:
                 # an assignment can sit inside an operand: a + (b = c), 0 < (e = f())
                 op_tok = self.advance()
                 value = self.parse_assignment()
-                return ast.Assign(op_tok.value, target, value, op_tok.line, op_tok.col)
+                return nodes.Assign(op_tok.value, target, value, op_tok.line, op_tok.col)
             return target
         if tok.kind == "keyword" and tok.value in TYPES:
             self.error("unexpected type name %s here" % tok.value)
@@ -392,13 +417,21 @@ class Parser(object):
         self.error("unexpected %r" % tok.value)
 
     def parse_vector_component(self):
-        # Inside < ... > a '>' closes the literal, so components stop before comparisons:
-        # parse at the shift level and above (same as the lslint grammar's %prec INITIALIZER).
+        # Inside < ... > a '>' closes the literal. Like the lslint grammar, a component followed by
+        # ',' may be any expression; the last one stops before comparisons (shift level and above).
+        save = self.pos
+        try:
+            expr = self.parse_expression()
+            if self.at_op(","):
+                return expr
+        except LslSyntaxError:
+            pass
+        self.pos = save
         return self.parse_binary(6)
 
 
 def parse(source):
-    """Parse LSL source text into an ast.Program."""
+    """Parse LSL source text into an nodes.Program."""
     import sys
     old = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old, 5000))     # deeply nested expressions in the corpus

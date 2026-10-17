@@ -13,12 +13,13 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import urllib.parse
 
 from .errors import ScriptError
 from .signatures import CONSTANTS
 from .values import (Key, Vector, Rotation, f32, to_int32, to_string, type_of, cast, default_value, format_float,
-                     rot_mul, vec_rotate, ZERO_VECTOR, ZERO_ROTATION)
+                     join_checked, rot_mul, vec_rotate, MAX_VALUE_LEN, ZERO_VECTOR, ZERO_ROTATION)
 
 # LSL constants come from builtins.txt, never from a literal here.
 JSON_INVALID, JSON_OBJECT, JSON_ARRAY, JSON_NUMBER, JSON_STRING, JSON_NULL, JSON_TRUE, JSON_FALSE, JSON_DELETE = (
@@ -27,8 +28,13 @@ JSON_INVALID, JSON_OBJECT, JSON_ARRAY, JSON_NUMBER, JSON_STRING, JSON_NULL, JSON
 TYPE_INVALID, TYPE_INTEGER, TYPE_FLOAT, TYPE_STRING, TYPE_KEY, TYPE_VECTOR, TYPE_ROTATION = (
     CONSTANTS[n] for n in ("TYPE_INVALID", "TYPE_INTEGER", "TYPE_FLOAT", "TYPE_STRING", "TYPE_KEY", "TYPE_VECTOR",
                            "TYPE_ROTATION"))
-STRING_TRIM_HEAD, STRING_TRIM_TAIL, STRING_TRIM = (CONSTANTS[n] for n in ("STRING_TRIM_HEAD", "STRING_TRIM_TAIL",
-                                                                          "STRING_TRIM"))
+STRING_TRIM_HEAD, STRING_TRIM_TAIL = CONSTANTS["STRING_TRIM_HEAD"], CONSTANTS["STRING_TRIM_TAIL"]
+JSON_APPEND = CONSTANTS["JSON_APPEND"]
+_TYPE_CODES = {"integer": TYPE_INTEGER, "float": TYPE_FLOAT, "string": TYPE_STRING, "key": TYPE_KEY,
+               "vector": TYPE_VECTOR, "rotation": TYPE_ROTATION}
+_LIST_STATS = {CONSTANTS[name]: name for name in (
+    "LIST_STAT_RANGE", "LIST_STAT_MIN", "LIST_STAT_MAX", "LIST_STAT_MEAN", "LIST_STAT_MEDIAN", "LIST_STAT_STD_DEV",
+    "LIST_STAT_SUM", "LIST_STAT_SUM_SQUARES", "LIST_STAT_NUM_COUNT", "LIST_STAT_GEOMETRIC_MEAN")}
 
 _HASHES = {"md5": hashlib.md5, "sha1": hashlib.sha1, "sha224": hashlib.sha224, "sha256": hashlib.sha256,
            "sha384": hashlib.sha384, "sha512": hashlib.sha512}
@@ -42,8 +48,33 @@ def _clamp1(x):
     return max(-1.0, min(1.0, x))
 
 
+_JSON_NUMBER = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$")
+
+
+class _RawNumber(str):
+    """A number given as LSL text: written to JSON as it was typed, not reformatted."""
+    __slots__ = ()
+
+
 def _dumps(value):
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    """JSON text as the grid writes it: compact, LSL floats with six decimals."""
+    if isinstance(value, _RawNumber):
+        return str(value)
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return format_float(value, 6)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(_dumps(v) for v in value) + "]"
+    return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _dumps(v) for k, v in value.items()) + "}"
 
 
 # --- lists ---------------------------------------------------------------------
@@ -89,9 +120,9 @@ def _list_get(src, index, type_name):
         if type_name == "key":
             return Key(value) if t == "string" else Key("")
         if type_name == "vector":
-            return cast(value, "vector") if t == "string" else ZERO_VECTOR
+            return ZERO_VECTOR            # no conversion from a string here (wiki: llList2Vector)
         if type_name == "rotation":
-            return cast(value, "rotation") if t == "string" else ZERO_ROTATION
+            return ZERO_ROTATION
     except ScriptError:
         pass
     return default_value(type_name)
@@ -126,8 +157,7 @@ def llGetListEntryType(src, index):
         index += len(src)
     if index < 0 or index >= len(src):
         return TYPE_INVALID
-    return {"integer": TYPE_INTEGER, "float": TYPE_FLOAT, "string": TYPE_STRING, "key": TYPE_KEY,
-            "vector": TYPE_VECTOR, "rotation": TYPE_ROTATION}[type_of(src[index])]
+    return _TYPE_CODES[type_of(src[index])]
 
 
 def llList2List(src, start, end):
@@ -196,14 +226,21 @@ def _sort_key(value):
     return (3, 0.0, "")
 
 
-def llListSort(src, stride, ascending):
+def chunks(src, stride):
+    """src cut into stride-long pieces, or None when its length is not a multiple of the stride."""
     if stride < 1:
         stride = 1
     if len(src) % stride != 0:
+        return None
+    return [src[i:i + stride] for i in range(0, len(src), stride)]
+
+
+def llListSort(src, stride, ascending):
+    pieces = chunks(src, stride)
+    if pieces is None:
         return list(src)
-    chunks = [src[i:i + stride] for i in range(0, len(src), stride)]
-    chunks.sort(key=lambda c: _sort_key(c[0]), reverse=not ascending)
-    return [v for c in chunks for v in c]
+    pieces.sort(key=lambda c: _sort_key(c[0]), reverse=not ascending)
+    return [v for c in pieces for v in c]
 
 
 def llList2ListStrided(src, start, end, stride):
@@ -218,44 +255,54 @@ def llList2ListSlice(src, start, end, stride, slice_index):
     return [src[i] for i in _norm_range(len(src), start, end) if i % stride == slice_index]
 
 
+def _stat_std_dev(nums):
+    n = len(nums)
+    if n < 2:
+        return 0.0
+    mean = sum(nums) / n
+    return math.sqrt(sum((x - mean) ** 2 for x in nums) / (n - 1))
+
+
+def _stat_median(nums):
+    s = sorted(nums)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _stat_geometric_mean(nums):
+    if any(x <= 0 for x in nums):
+        return 0.0
+    return math.exp(sum(math.log(x) for x in nums) / len(nums))
+
+
+_STAT_FUNCTIONS = {
+    "LIST_STAT_RANGE": lambda nums: max(nums) - min(nums),
+    "LIST_STAT_MIN": min,
+    "LIST_STAT_MAX": max,
+    "LIST_STAT_MEAN": lambda nums: sum(nums) / len(nums),
+    "LIST_STAT_MEDIAN": _stat_median,
+    "LIST_STAT_STD_DEV": _stat_std_dev,
+    "LIST_STAT_SUM": sum,
+    "LIST_STAT_SUM_SQUARES": lambda nums: sum(x * x for x in nums),
+    "LIST_STAT_NUM_COUNT": len,
+    "LIST_STAT_GEOMETRIC_MEAN": _stat_geometric_mean,
+}
+
+
 def llListStatistics(operation, src):
     nums = [float(v) for v in src if type_of(v) in ("integer", "float")]
-    if not nums:
+    name = _LIST_STATS.get(operation)
+    if not nums or name is None:
         return 0.0
-    n = len(nums)
-    if operation == 0:      # LIST_STAT_RANGE
-        return f32(max(nums) - min(nums))
-    if operation == 1:      # LIST_STAT_MIN
-        return f32(min(nums))
-    if operation == 2:      # LIST_STAT_MAX
-        return f32(max(nums))
-    if operation == 3:      # LIST_STAT_MEAN
-        return f32(sum(nums) / n)
-    if operation == 4:      # LIST_STAT_MEDIAN
-        s = sorted(nums)
-        return f32(s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0)
-    if operation == 5:      # LIST_STAT_STD_DEV
-        mean = sum(nums) / n
-        return f32(math.sqrt(sum((x - mean) ** 2 for x in nums) / (n - 1))) if n > 1 else 0.0
-    if operation == 6:      # LIST_STAT_SUM
-        return f32(sum(nums))
-    if operation == 7:      # LIST_STAT_SUM_SQUARES
-        return f32(sum(x * x for x in nums))
-    if operation == 8:      # LIST_STAT_NUM_COUNT
-        return f32(n)
-    if operation == 9:      # LIST_STAT_GEOMETRIC_MEAN
-        if any(x <= 0 for x in nums):
-            return 0.0
-        return f32(math.exp(sum(math.log(x) for x in nums) / n))
-    return 0.0
+    return f32(_STAT_FUNCTIONS[name](nums))
 
 
 def llDumpList2String(src, separator):
-    return separator.join(to_string(v) for v in src)
+    return join_checked(separator, [to_string(v) for v in src])
 
 
 def llList2CSV(src):
-    return ", ".join(to_string(v) for v in src)
+    return join_checked(", ", [to_string(v) for v in src])
 
 
 def llCSV2List(src):
@@ -364,6 +411,9 @@ def llToLower(src):
 def llReplaceSubString(src, pattern, replacement, count):
     if pattern == "":
         return src
+    hits = src.count(pattern) if count == 0 else min(src.count(pattern), abs(count))
+    if len(src) + hits * (len(replacement) - len(pattern)) > MAX_VALUE_LEN:
+        raise ScriptError("Stack-Heap Collision", "value over %d items" % MAX_VALUE_LEN)
     if count == 0:
         return src.replace(pattern, replacement)
     if count > 0:
@@ -432,7 +482,7 @@ def llHMAC(authkey, message, hashalg):
     alg = _HASHES.get(hashalg.lower())
     if alg is None:
         return ""
-    return hmac.new(authkey.encode("utf-8"), message.encode("utf-8"), alg).hexdigest()
+    return base64.b64encode(hmac.new(authkey.encode("utf-8"), message.encode("utf-8"), alg).digest()).decode("ascii")
 
 
 def llComputeHash(data, algorithm):
@@ -465,12 +515,14 @@ def llHash(text):
 
 # --- JSON ----------------------------------------------------------------------
 
-def _json_value_from_lsl(value):
+def _json_value_from_lsl(value, numeric_strings=False):
+    """An LSL value as a JSON node. numeric_strings: a string that reads as a number becomes a number
+    (llJsonSetValue does that, llList2Json keeps it a string: wiki, BUG-6284)."""
     t = type_of(value)
     if t == "integer":
         return value
     if t == "float":
-        return float(format_float(value, 6))
+        return value
     if t in ("string", "key"):
         s = str(value)
         if s == JSON_TRUE:
@@ -480,6 +532,8 @@ def _json_value_from_lsl(value):
         if s == JSON_NULL:
             return None
         stripped = s.strip()
+        if numeric_strings and _JSON_NUMBER.match(stripped):
+            return _RawNumber(stripped)       # "10" is stored as the number 10 (wiki llJsonSetValue example)
         if stripped.startswith("{") or stripped.startswith("["):
             try:
                 return json.loads(stripped)
@@ -508,24 +562,23 @@ def _lsl_from_json_value(value):
     return _dumps(value)
 
 
-def _json_walk(root, specifiers):
-    node = root
+_MISSING = object()
+
+
+def _json_lookup(text, specifiers):
+    """The JSON node at the path, or _MISSING when the text or the path is invalid."""
+    try:
+        node = json.loads(text)
+    except ValueError:
+        return _MISSING
     for spec in specifiers:
-        if isinstance(node, dict):
-            if type_of(spec) not in ("string", "key"):
-                return JSON_INVALID, None
-            if spec not in node:
-                return JSON_INVALID, None
+        if isinstance(node, dict) and type_of(spec) in ("string", "key") and spec in node:
             node = node[spec]
-        elif isinstance(node, list):
-            if type_of(spec) != "integer":
-                return JSON_INVALID, None
-            if spec < 0 or spec >= len(node):
-                return JSON_INVALID, None
+        elif isinstance(node, list) and type_of(spec) == "integer" and 0 <= spec < len(node):
             node = node[spec]
         else:
-            return JSON_INVALID, None
-    return None, node
+            return _MISSING
+    return node
 
 
 def _json_parse(text):
@@ -536,21 +589,13 @@ def _json_parse(text):
 
 
 def llJsonGetValue(text, specifiers):
-    bad, root = _json_parse(text)
-    if bad:
-        return JSON_INVALID
-    invalid, node = _json_walk(root, specifiers)
-    if invalid:
-        return JSON_INVALID
-    return _lsl_from_json_value(node)
+    node = _json_lookup(text, specifiers)
+    return JSON_INVALID if node is _MISSING else _lsl_from_json_value(node)
 
 
 def llJsonValueType(text, specifiers):
-    bad, root = _json_parse(text)
-    if bad:
-        return JSON_INVALID
-    invalid, node = _json_walk(root, specifiers)
-    if invalid:
+    node = _json_lookup(text, specifiers)
+    if node is _MISSING:
         return JSON_INVALID
     if node is None:
         return JSON_NULL
@@ -571,7 +616,7 @@ def llJsonSetValue(text, specifiers, value):
     bad, root = _json_parse(text) if text.strip() else (False, None)
     if bad or not specifiers:
         return JSON_INVALID
-    new_value = _json_value_from_lsl(value) if value != JSON_DELETE else JSON_DELETE
+    new_value = _json_value_from_lsl(value, numeric_strings=True) if value != JSON_DELETE else JSON_DELETE
 
     def set_in(node, specs):
         spec = specs[0]
@@ -581,7 +626,7 @@ def llJsonSetValue(text, specifiers, value):
                 node = []
             if not isinstance(node, list):
                 node = []
-            if spec == -1:                      # JSON_APPEND
+            if spec == JSON_APPEND:
                 if last:
                     node.append(new_value)
                 else:
@@ -802,7 +847,9 @@ def llRotBetween(a, b):
     if dot >= 1.0 - 1e-7:
         return ZERO_ROTATION
     if dot <= -1.0 + 1e-7:
-        return Rotation(0.0, 0.0, 1.0, 0.0)
+        # opposite vectors: a half turn about any axis perpendicular to a
+        axis = llVecNorm(Vector(na[1], -na[0], 0.0) if abs(na[2]) < 0.9 else Vector(0.0, na[2], -na[1]))
+        return Rotation(axis[0], axis[1], axis[2], 0.0)
     cross = Vector(na[1] * nb[2] - na[2] * nb[1], na[2] * nb[0] - na[0] * nb[2], na[0] * nb[1] - na[1] * nb[0])
     s = math.sqrt((1.0 + dot) * 2.0)
     return Rotation(cross[0] / s, cross[1] / s, cross[2] / s, s / 2.0)

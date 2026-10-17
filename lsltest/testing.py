@@ -9,16 +9,18 @@
             self.sim.touch()
             self.assertOwnerSaid("ready")
 
-Every test gets a fresh Simulator in self.sim. Chat assertions look at what
-scripts said in public (say, whisper, shout, regionsay, regionsayto): what an
-avatar said through sim.say(), owner-only messages and instant messages have
-their own assertions, so a test cannot pass because of its own input.
+Every test gets a fresh Simulator in self.sim (override setUp? call the
+inherited one first). Chat assertions look at what scripts said on a channel
+(llSay, llWhisper, llShout, llRegionSay, llRegionSayTo): what an avatar said
+through sim.say(), owner-only messages and instant messages have their own
+assertions, so a test cannot pass because of its own input. Every text
+assertion takes exact=True to match the whole line instead of a substring.
 """
 
 import unittest
 
 from .sim import Simulator
-from .values import lsl_repr
+from .values import f32, lsl_repr
 
 SCRIPT_CHAT = ("say", "whisper", "shout", "regionsay", "regionsayto")
 
@@ -46,10 +48,10 @@ class LslTestCase(unittest.TestCase):
         return any(line == text if exact else text in line for line in lines)
 
     def assertSaid(self, text, channel=0, exact=False):
-        """A script said text (substring, or the whole line with exact=True) on the channel."""
+        """A script said text on the channel (channel=None: on any channel)."""
         lines = self._lines(channel)
         if not self._found(text, lines, exact):
-            self.fail("no script said %r on channel %d; script chat there: %r" % (text, channel, lines))
+            self.fail("no script said %r on channel %s; script chat there: %r" % (text, channel, lines))
 
     def assertNotSaid(self, text, channel=0, exact=False):
         """No script said text on the channel (channel=None: on any channel)."""
@@ -75,8 +77,11 @@ class LslTestCase(unittest.TestCase):
 
     # --- dialogs and listens -----------------------------------------------
 
+    def _dialogs_text(self):
+        return [(d.text, d.buttons) for d in self.sim.dialogs]
+
     def assertDialog(self, buttons=None, contains=None, avatar=None):
-        """The latest matching llDialog; returns it (attributes avatar, text, buttons, channel)."""
+        """The latest matching llDialog; returns it (attributes avatar, text, buttons, channel, script)."""
         for dialog in reversed(self.sim.dialogs):
             if avatar is not None and dialog.avatar != avatar.key:
                 continue
@@ -85,43 +90,51 @@ class LslTestCase(unittest.TestCase):
             if buttons is not None and list(buttons) != dialog.buttons:
                 continue
             return dialog
-        self.fail("no matching dialog; dialogs shown: %r" % [(d.text, d.buttons) for d in self.sim.dialogs])
+        self.fail("no matching dialog; dialogs shown: %r" % self._dialogs_text())
 
     def assertNoDialog(self):
         if self.sim.dialogs:
-            self.fail("a dialog was shown: %r" % [(d.text, d.buttons) for d in self.sim.dialogs])
+            self.fail("a dialog was shown: %r" % self._dialogs_text())
+
+    def _active_listens(self, script=None, channel=None):
+        scripts = [script] if script else self.sim.all_scripts()
+        return [(s, l) for s in scripts for l in s.listens.values()
+                if l.active and (channel is None or l.channel == channel)]
 
     def assertListening(self, channel=None, script=None):
         """Some script (or this one) has an active listen (on the channel); returns the listen."""
-        scripts = [script] if script else self.sim.all_scripts()
-        for s in scripts:
-            for listen in s.listens.values():
-                if listen.active and (channel is None or listen.channel == channel):
-                    return listen
-        self.fail("no active listen%s" % ("" if channel is None else " on channel %d" % channel))
+        active = self._active_listens(script, channel)
+        if not active:
+            self.fail("no active listen%s" % ("" if channel is None else " on channel %d" % channel))
+        return active[0][1]
 
     def assertNoListens(self, script=None):
-        scripts = [script] if script else self.sim.all_scripts()
-        for s in scripts:
-            active = [l for l in s.listens.values() if l.active]
-            if active:
-                self.fail("%s still listens: %r" % (s.name, active))
+        active = self._active_listens(script)
+        if active:
+            self.fail("still listening: %r" % [(s.name, l) for s, l in active])
 
     # --- errors and recorded calls -----------------------------------------
 
+    def _errors_text(self):
+        return [(n, str(e)) for n, e in self.sim.errors]
+
     def assertNoErrors(self):
         if self.sim.errors:
-            self.fail("script run-time errors: %r" % [(n, str(e)) for n, e in self.sim.errors])
+            self.fail("script run-time errors: %r" % self._errors_text())
 
     def assertError(self, kind, script=None):
-        """A script died with this error kind ("Math Error", "Stack-Heap Collision"...); returns the error."""
+        """A script (a Script or its name) died with this error kind ("Math Error"...); returns the error."""
+        wanted = getattr(script, "name", script)
         for name, err in self.sim.errors:
-            if err.kind == kind and (script is None or name == script):
+            if err.kind == kind and (wanted is None or name == wanted):
                 return err
-        self.fail("no %r error; errors: %r" % (kind, [(n, str(e)) for n, e in self.sim.errors]))
+        self.fail("no %r error; errors: %r" % (kind, self._errors_text()))
 
     def assertCalled(self, builtin, *args):
-        """An unmodelled builtin was called (with these leading arguments); returns the recorded arguments."""
+        """A builtin the simulator only records was called (with these leading arguments); returns the arguments.
+
+        Recorded: every builtin without a model (llSetColor, llSetPrimitiveParams...), the RECORD_ONLY ones
+        (controls, animations, llGiveInventory), llDie and llRezObject."""
         for _, name, recorded in self.sim.calls:
             if name == builtin and (not args or list(args) == recorded[:len(args)]):
                 return recorded
@@ -152,7 +165,7 @@ class LslTestCase(unittest.TestCase):
             self.fail("HTTP requests were sent: %r" % self.sim.http_out)
 
     def assertLinkMessage(self, num=None, str_contains=None):
-        """A script sent a matching llMessageLinked; returns it (attributes sender, link, num, str, id)."""
+        """A script sent a matching llMessageLinked; returns it (attributes script, sender, link, num, str, id)."""
         for message in self.sim.link_messages:
             if num is not None and message.num != num:
                 continue
@@ -167,6 +180,11 @@ class LslTestCase(unittest.TestCase):
         self.assertEqual(script.state, name, "%s is in state %s, expected %s" % (script.name, script.state, name))
 
     def assertGlobal(self, script, name, expected):
-        actual = script.globals.get(name)
+        """The script's global equals expected (a float is compared at single precision, like LSL)."""
+        if name not in script.globals:
+            self.fail("%s has no global %r; globals: %s" % (script.name, name, sorted(script.globals)))
+        actual = script.globals[name]
+        if isinstance(actual, float) and isinstance(expected, (int, float)):
+            expected = f32(expected)
         self.assertEqual(actual, expected, "%s.%s is %s, expected %s"
                          % (script.name, name, lsl_repr(actual), lsl_repr(expected)))

@@ -18,7 +18,7 @@ personal data, credentials, or anything that belongs to a private project.
 | `builtins.txt`, `builtins_txt.cc`, `builtins_version.txt` | Functions, events and constants. Generated, never hand-edited. |
 | `update_builtins.py` | Refreshes the three files above from secondlife/lsl-definitions. |
 | `lslcheck.py` | Front end: GCC-style or JSON output, directory scan, exit codes. |
-| `lsltest/` | Runs LSL outside Second Life: lexer and parser (`lexer.py`, `parser.py`, `nodes.py`; same grammar as lslint), interpreter with LSL semantics (`interp.py`, `values.py`), pure builtins (`pure.py`), fake simulator and acting builtins (`sim.py`), unittest helpers (`testing.py`), CLI (`__main__.py`). `signatures.py` reads `data/builtins.txt`, the bundled copy of the signatures and constants: no LSL constant is declared anywhere else. `test_lsltest.py` covers it. |
+| `lsltest/` | Runs LSL outside Second Life: lexer and parser (`lexer.py`, `parser.py`, `nodes.py`; same grammar as lslint), interpreter with LSL semantics (`interp.py`, `values.py`), pure builtins (`pure.py`), fake simulator and acting builtins (`sim.py`), unittest helpers (`testing.py`), CLI (`__main__.py`), exceptions (`errors.py`), version (`_version.py`, read by `pyproject.toml`). `signatures.py` reads `data/builtins.txt`, the bundled copy of the signatures and constants: no LSL constant is declared anywhere else. `test_lsltest.py` covers it. |
 | `scripts/` | Test corpus. One folder per option that needs a flag. |
 | `test.sh` | Runs the corpus with `-A` assertion checking. |
 | `skills/lsl-dev/` | Installable skill for Claude Code, readable by any assistant. `references/` holds the LSL facts and the error code table. |

@@ -3,20 +3,30 @@
 
 import unittest
 
-from lsltest import LslTestCase, ScriptError, Simulator
+from lsltest import LslSyntaxError, LslTestCase, ScriptError, Simulator, UnsupportedError
 from lsltest.parser import parse
-from lsltest.values import Key, Vector, Rotation, NULL_KEY, to_string, cast, binary
+from lsltest.signatures import CONSTANTS
+from lsltest.values import NULL_KEY, Vector
+
+
+def run_script(source, **kwargs):
+    """Load one script in a fresh simulator, run state_entry, return the simulator."""
+    sim = Simulator(**kwargs)
+    sim.load(source)
+    sim.start()
+    return sim
+
+
+def owner_heard(sim):
+    return [c.text for c in sim.chat if c.kind == "ownersay"]
 
 
 def run_expr(expr, prelude=""):
     """Evaluate an LSL expression inside state_entry and return the owner-say text."""
-    source = "%s\ndefault { state_entry() { llOwnerSay((string)(%s)); } }" % (prelude, expr)
-    sim = Simulator()
-    sim.load(source)
-    sim.start()
+    sim = run_script("%s\ndefault { state_entry() { llOwnerSay((string)(%s)); } }" % (prelude, expr))
     if sim.errors:
         raise sim.errors[0][1]
-    return [c.text for c in sim.chat if c.kind == "ownersay"][-1]
+    return owner_heard(sim)[-1]
 
 
 class ParserTest(unittest.TestCase):
@@ -35,7 +45,6 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(run_expr("0 < e = 3", "integer e;"), "1")
 
     def test_syntax_error_has_position(self):
-        from lsltest import LslSyntaxError
         with self.assertRaises(LslSyntaxError) as ctx:
             parse("default { state_entry() { integer x = ; } }")
         self.assertEqual(ctx.exception.line, 1)
@@ -410,7 +419,6 @@ class SimulatorTest(LslTestCase):
             self.load("no_such_file.lsl")
 
     def test_deeply_nested_expression_is_a_syntax_error_not_a_crash(self):
-        from lsltest import LslSyntaxError
         source = "default { state_entry() { integer x = %s1%s; } }" % ("(" * 20000, ")" * 20000)
         with self.assertRaises(LslSyntaxError):
             parse(source)
@@ -427,7 +435,208 @@ class SimulatorTest(LslTestCase):
     def test_constants_come_from_builtins_txt(self):
         self.assertEqual(run_expr("EOF == \"\\n\\n\\n\""), "1")
         self.assertEqual(run_expr("JSON_INVALID"), "\ufdd0")
-        self.assertIs(self.sim.constants, __import__("lsltest.signatures", fromlist=["CONSTANTS"]).CONSTANTS)
+        self.assertIs(self.sim.constants, CONSTANTS)
+
+
+class GridBehaviourTest(LslTestCase):
+    """Behaviours checked against the wiki or against the grid's own rules (round 3 of the reviews)."""
+
+    def test_rotation_composition_is_associative_and_euler_round_trips(self):
+        sim = run_script("""
+            default { state_entry() {
+                rotation rx = llEuler2Rot(<90.0, 0.0, 0.0> * DEG_TO_RAD);
+                rotation rz = llEuler2Rot(<0.0, 0.0, 90.0> * DEG_TO_RAD);
+                llOwnerSay((string)(<1.0, 0.0, 0.0> * rx * rz));
+                llOwnerSay((string)(<1.0, 0.0, 0.0> * (rx * rz)));
+                llOwnerSay((string)(llRot2Euler(llEuler2Rot(<30.0, 0.0, 60.0> * DEG_TO_RAD)) * RAD_TO_DEG));
+                llOwnerSay((string)(<0.0, 0.0, 1.0> * llRotBetween(<0.0, 0.0, 1.0>, <0.0, 0.0, -1.0>)));
+            } }""")
+        heard = owner_heard(sim)
+        self.assertEqual(heard[0], heard[1])
+        self.assertEqual(heard[2], "<30.00000, -0.00000, 60.00000>")
+        self.assertEqual(heard[3], "<0.00000, 0.00000, -1.00000>")
+
+    def test_mixed_integer_and_float_go_through_single_precision(self):
+        self.assertEqual(run_expr("f == big", "integer big = 16777217; float f = big;"), "1")
+        self.assertEqual(run_expr("1700000030 - start", "float start = 1700000000;"), "0.000000")
+
+    def test_link_messages_are_delivered_by_prim(self):
+        self.load("""default {
+            state_entry() {
+                llMessageLinked(LINK_ALL_OTHERS, 1, "others", "");
+                llMessageLinked(LINK_THIS, 2, "this", "");
+                llMessageLinked(llGetLinkNumber(), 3, "self", "");
+            }
+            link_message(integer s, integer n, string t, key k) { llOwnerSay("core " + (string)s + " " + t); } }""", name="core")
+        self.load('default { link_message(integer s, integer n, string t, key k) { llOwnerSay("menu " + (string)s + " " + t); } }', name="menu")
+        self.sim.start()
+        self.assertEqual(sorted(owner_heard(self.sim)), ["core 0 self", "core 0 this", "menu 0 self", "menu 0 this"])
+        message = self.assertLinkMessage(num=2)
+        self.assertEqual((message.script.name, message.sender, message.str), ("core", 0, "this"))
+
+    def test_http_response_is_cut_at_body_maxlength_and_reaches_every_script(self):
+        self.load("""default {
+            state_entry() { llHTTPRequest("http://example.invalid/", [HTTP_CUSTOM_HEADER, "X-A", "b", HTTP_METHOD, "POST"], ""); }
+            http_response(key r, integer st, list m, string b) { llOwnerSay("core " + (string)llStringLength(b) + " " + llList2CSV(m)); } }""", name="core")
+        self.load('default { http_response(key r, integer st, list m, string b) { llOwnerSay("api " + (string)st); } }', name="api")
+        self.sim.start()
+        self.assertEqual(self.assertHttpOut().method, "POST")
+        self.sim.http_respond(200, "x" * 3000)
+        self.assertOwnerSaid("core 2048 %d, 2048" % CONSTANTS["HTTP_BODY_TRUNCATED"], exact=True)
+        self.assertOwnerSaid("api 200", exact=True)
+
+    def test_content_type_through_a_custom_header_is_a_runtime_error(self):
+        run = run_script('default { state_entry() { llHTTPRequest("http://example.invalid/", [HTTP_CUSTOM_HEADER, "Content-Type", "text/plain"], ""); } }')
+        self.assertEqual([e.kind for _, e in run.errors], ["Script run-time error"])
+        self.assertIn("HTTP_MIMETYPE", run.errors[0][1].detail)
+
+    def test_memory_limit_kills_the_script(self):
+        sim = run_script("list l; default { state_entry() { integer i; for (i = 0; i < 700; i++) l += [llGenerateKey()]; } }")
+        self.assertEqual([e.kind for _, e in sim.errors], ["Stack-Heap Collision"])
+
+    def test_sleep_inside_a_timer_neither_hangs_nor_turns_the_clock_back(self):
+        sim = run_script("default { state_entry() { llSetTimerEvent(1.0); } timer() { llSleep(1.0); llOwnerSay((string)llGetTime()); } }")
+        sim.tick(3.0)
+        self.assertEqual(owner_heard(sim), ["2.000000", "3.000000", "4.000000"])
+        self.assertEqual(sim.time, 4.0)
+
+    def test_error_in_state_exit_kills_the_script_and_names_the_line(self):
+        script = self.load("integer z;\ndefault { touch_start(integer n) { state two; }\n state_exit() { integer x = 1 / z; } }\nstate two { state_entry() { } }")
+        self.sim.start()
+        self.sim.touch()
+        err = self.assertError("Math Error", script)
+        self.assertEqual(err.line, 3)
+        self.assertTrue(script.dead)
+
+    def test_touch_end_runs_after_the_state_change_of_touch_start(self):
+        self.load('default { touch_start(integer n) { state armed; } } state armed { touch_end(integer n) { llSay(0, "BOOM"); state default; } }')
+        self.sim.start()
+        self.sim.touch()
+        self.assertSaid("BOOM")
+
+    def test_permissions_arrive_with_the_event_not_inside_the_call(self):
+        sim = run_script("""default {
+            state_entry() { llRequestPermissions(llGetOwner(), PERMISSION_DEBIT); llOwnerSay("now " + (string)llGetPermissions()); }
+            run_time_permissions(integer p) { llOwnerSay("later " + (string)p); } }""")
+        self.assertEqual(owner_heard(sim), ["now 0", "later %d" % CONSTANTS["PERMISSION_DEBIT"]])
+
+    def test_json_output_uses_six_decimals(self):
+        self.assertEqual(run_expr('llList2Json(JSON_ARRAY, [1.5, 2, "a", "7"])'), '[1.500000,2,"a","7"]')
+        self.assertEqual(run_expr('llJsonSetValue("[]", [JSON_APPEND], "0.25")'), "[0.25]")
+        self.assertEqual(run_expr('llJsonSetValue("[9]", [0], "10")'), "[10]")
+
+    def test_urls_die_on_rez_and_on_region_restart(self):
+        script = self.load('default { state_entry() { llRequestURL(); } http_request(key id, string method, string body) { if (method == URL_REQUEST_GRANTED) llOwnerSay(body); } }')
+        self.sim.start()
+        url = owner_heard(self.sim)[0]
+        self.assertEqual(self.sim.http_in_request(url, "GET")[0], 500)        # reachable: the script just does not answer GET
+        self.sim.on_rez(0)
+        self.assertEqual(self.sim.http_in_request(url, "GET")[0], 404)
+        self.assertEqual(script.urls, set())
+
+    def test_notecard_sync_read_needs_the_cache(self):
+        self.sim.notecard("cfg", "line0")
+        self.load("""default {
+            state_entry() { if (llGetNotecardLineSync("cfg", 0) == NAK) llOwnerSay("nak"); llGetNotecardLine("cfg", 0); }
+            dataserver(key q, string d) { llOwnerSay(d + " " + llGetNotecardLineSync("cfg", 0)); } }""")
+        self.sim.start()
+        self.assertEqual(owner_heard(self.sim), ["nak", "line0 line0"])
+        cached = Simulator()
+        cached.notecard("cfg2", "x", cached=True)
+        cached.load('default { state_entry() { llOwnerSay(llGetNotecardLineSync("cfg2", 0)); } }')
+        cached.start()
+        self.assertEqual(owner_heard(cached), ["x"])
+
+    def test_sensor_results_are_nearest_first(self):
+        self.sim.avatar("Far Away").pos = Vector(138.0, 128.0, 25.0)
+        self.sim.avatar("Near By").pos = Vector(130.0, 128.0, 25.0)
+        self.sim.owner.pos = Vector(178.0, 128.0, 25.0)
+        self.load('default { state_entry() { llSensor("", NULL_KEY, AGENT, 96.0, PI); } sensor(integer n) { llOwnerSay(llDetectedName(0) + "," + llDetectedName(2)); } }')
+        self.sim.start()
+        self.assertOwnerSaid("Near By,Test Owner", exact=True)
+
+    def test_vector_literal_components_accept_any_expression_before_the_last(self):
+        self.assertEqual(run_expr("<flags & 1, 1 < 2, 3>", "integer flags = 3;"), "<1.00000, 1.00000, 3.00000>")
+
+    def test_same_listen_again_returns_the_handle_even_at_the_limit(self):
+        sim = run_script("""default { state_entry() {
+            integer i; for (i = 1; i <= 65; i++) llListen(i, "", NULL_KEY, "");
+            llOwnerSay((string)llListen(5, "", NULL_KEY, ""));
+        } }""")
+        self.assertEqual(owner_heard(sim), ["5"])
+        self.assertEqual(sim.errors, [])
+
+    def test_return_with_a_value_in_an_event_handler_is_an_error(self):
+        sim = run_script("default { state_entry() { return 1; } }")
+        self.assertIn("event handler", sim.errors[0][1].detail)
+
+    def test_dialog_errors_are_debug_shouts_and_the_script_goes_on(self):
+        sim = run_script("""default { state_entry() {
+            llDialog(llGetOwner(), "", ["OK"], 5);
+            llDialog(llGetOwner(), "x", ["a","b","c","d","e","f","g","h","i","j","k","l","m"], 5);
+            llDialog(llGetOwner(), "x", ["a very long button label indeed"], 5);
+            llOwnerSay("alive");
+        } }""")
+        debug = [c.text for c in sim.chat if c.kind == "debug"]
+        self.assertEqual(len(debug), 3)
+        self.assertTrue(all(line.startswith("llDialog:") for line in debug))
+        self.assertEqual(sim.dialogs, [])
+        self.assertEqual(owner_heard(sim), ["alive"])
+
+    def test_scripts_posting_to_each_other_forever_are_caught(self):
+        with self.assertRaises(RuntimeError):
+            run_script('default { state_entry() { llMessageLinked(LINK_THIS, 0, "", NULL_KEY); } link_message(integer s, integer n, string t, key k) { llMessageLinked(LINK_THIS, 0, "", NULL_KEY); } }')
+        with self.assertRaises(RuntimeError):
+            run_script("default { state_entry() { llResetScript(); } }")
+
+    def test_strict_mode(self):
+        sim = run_script('default { state_entry() { llTakeControls(CONTROL_FWD, TRUE, TRUE); llOwnerSay("ok"); } }', strict=True)
+        self.assertEqual(owner_heard(sim), ["ok"])
+        with self.assertRaises(UnsupportedError):
+            run_script("default { state_entry() { llSetColor(<1.0, 1.0, 1.0>, ALL_SIDES); } }", strict=True)
+
+    def test_http_handler_answers_during_the_run(self):
+        self.sim.http_handler = lambda request: (200, "pong " + request.url)
+        self.load('default { state_entry() { llHTTPRequest("http://example.invalid/x", [], ""); } http_response(key r, integer s, list m, string b) { llOwnerSay(b); } }')
+        self.sim.start()
+        self.assertOwnerSaid("pong http://example.invalid/x", exact=True)
+
+    def test_owner_and_targeted_chat_assertions(self):
+        other = self.sim.avatar("Other Resident")
+        self.load('default { state_entry() { llInstantMessage("%s", "psst"); llSay(7, "seven"); } }' % other.key)
+        self.sim.start()
+        self.assertSaidTo(other, "psst")
+        self.assertNotOwnerSaid("psst")
+        self.assertSaid("seven", channel=None)
+        self.assertNotSaid("seven")                  # channel 0 by default
+        with self.assertRaises(AssertionError):
+            self.assertSaid("nothing", channel=None)
+
+    def test_assert_error_takes_the_script_and_assert_global_reports_a_missing_name(self):
+        script = self.load("float rate = 0.1; integer z; default { state_entry() { integer x = 1 / z; } }")
+        self.sim.start()
+        self.assertError("Math Error", script)
+        self.assertGlobal(script, "rate", 0.1)       # compared at single precision
+        with self.assertRaises(AssertionError):
+            self.assertGlobal(script, "rtae", 0.1)
+
+    def test_chat_is_cut_at_1024_bytes(self):
+        sim = run_script('default { state_entry() { string s = "\u00e9"; integer i; for (i = 0; i < 11; i++) s += s; llSay(0, s); } }')
+        self.assertEqual(len(sim.chat[0].text.encode("utf-8")), 1024)
+
+    def test_facts_checked_on_the_wiki(self):
+        self.assertEqual(run_expr('llHMAC("k", "m", "sha256")'), "tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew=")
+        self.assertEqual(run_expr('llList2Vector(["<1,2,3>"], 0)'), "<0.00000, 0.00000, 0.00000>")
+        self.assertEqual(run_expr("llGetWallclock()"), "51200.000000")     # 1700000000 is 22:13:20 UTC, 14:13:20 SLT
+        self.assertEqual(run_expr("(integer)1e10"), "-2147483648")
+
+    def test_linkset_find_keys_refuses_catastrophic_and_polynomial_patterns(self):
+        sim = run_script("""default { state_entry() {
+            llLinksetDataWrite("abc", "1"); llLinksetDataWrite("abd", "2");
+            llOwnerSay(llList2CSV(llLinksetDataFindKeys("^ab", 0, 0)));
+            llOwnerSay((string)llLinksetDataCountFound("^(a+)+$") + (string)llLinksetDataCountFound(".*.*x"));
+        } }""")
+        self.assertEqual(owner_heard(sim), ["abc, abd", "00"])
 
 
 class CliTest(unittest.TestCase):

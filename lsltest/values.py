@@ -1,6 +1,8 @@
 """LSL values and their semantics: types, casts, formatting, truthiness, operators."""
 
 import math
+import operator
+import re
 import struct
 
 from .errors import ScriptError
@@ -18,33 +20,14 @@ def to_int32(value):
     return value
 
 
+_ESCAPES = {"n": "\n", "t": "    "}
+_ESCAPE_RE = re.compile(r"\\(.)", re.S)
+
+
 def unescape(text):
-    """Compile-time escapes of LSL string literals: backslash-n, backslash-t (four
-    spaces), backslash-quote and backslash-backslash. Any other backslash sequence
-    drops the backslash, as the LSL compiler does."""
-    out = []
-    i = 0
-    n = len(text)
-    backslash = chr(92)
-    while i < n:
-        c = text[i]
-        if c == backslash and i + 1 < n:
-            nxt = text[i + 1]
-            if nxt == "n":
-                out.append(chr(10))
-            elif nxt == "t":
-                out.append("    ")
-            elif nxt == '"':
-                out.append('"')
-            elif nxt == backslash:
-                out.append(backslash)
-            else:
-                out.append(nxt)
-            i += 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
+    """Compile-time escapes of LSL string literals: backslash n, t (four spaces), quote and
+    backslash. Any other backslash sequence drops the backslash, as the LSL compiler does."""
+    return _ESCAPE_RE.sub(lambda m: _ESCAPES.get(m.group(1), m.group(1)), text)
 
 
 def f32(value):
@@ -60,6 +43,18 @@ def check_size(value):
     if isinstance(value, (str, list)) and len(value) > MAX_VALUE_LEN:
         raise ScriptError("Stack-Heap Collision", "value over %d items" % MAX_VALUE_LEN)
     return value
+
+
+def join_checked(separator, parts):
+    """separator.join(parts), refused before it is built when it would exceed MAX_VALUE_LEN."""
+    total = sum(len(p) for p in parts) + len(separator) * max(len(parts) - 1, 0)
+    if total > MAX_VALUE_LEN:
+        raise ScriptError("Stack-Heap Collision", "value over %d items" % MAX_VALUE_LEN)
+    return separator.join(parts)
+
+
+def _isdigit(c):
+    return "0" <= c <= "9"
 
 
 class Key(str):
@@ -185,7 +180,7 @@ def to_string(value):
         return "<%s, %s, %s>" % tuple(format_float(c, 5) for c in value)
     if t == "rotation":
         return "<%s, %s, %s, %s>" % tuple(format_float(c, 5) for c in value)
-    return check_size("".join(to_string(item) for item in value))
+    return join_checked("", [to_string(item) for item in value])
 
 
 # --- casts --------------------------------------------------------------------
@@ -198,12 +193,12 @@ def _leading_number(text):
     if i < n and s[i] in "+-":
         i += 1
     digits = 0
-    while i < n and s[i].isdigit():
+    while i < n and _isdigit(s[i]):
         i += 1
         digits += 1
     if i < n and s[i] == ".":
         i += 1
-        while i < n and s[i].isdigit():
+        while i < n and _isdigit(s[i]):
             i += 1
             digits += 1
     if digits == 0:
@@ -212,8 +207,8 @@ def _leading_number(text):
         j = i + 1
         if j < n and s[j] in "+-":
             j += 1
-        if j < n and s[j].isdigit():
-            while j < n and s[j].isdigit():
+        if j < n and _isdigit(s[j]):
+            while j < n and _isdigit(s[j]):
                 j += 1
             i = j
     return s[:i]
@@ -237,9 +232,9 @@ def to_integer(value):
     if t == "integer":
         return value
     if t == "float":
-        if math.isnan(value) or math.isinf(value):
-            return -2147483648
-        return to_int32(int(value))
+        if math.isnan(value) or math.isinf(value) or not -2147483648.0 <= value < 2147483648.0:
+            return -2147483648        # out of range: what the grid's conversion gives
+        return int(value)
     if t in ("string", "key"):
         hx = _leading_hex(value)
         if hx:
@@ -300,7 +295,10 @@ def _parse_components(text, count):
         num = _leading_number(part)
         if not num:
             return None
-        values.append(float(num))
+        try:
+            values.append(float(num))
+        except ValueError:
+            return None
     return values
 
 
@@ -374,14 +372,14 @@ def float_div(a, b):
 
 
 def rot_mul(a, b):
-    """Quaternion product a * b, LSL order (apply a then b)."""
+    """LSL a * b: rotate by a, then by b (the Hamilton product b x a)."""
     ax, ay, az, aw = a
     bx, by, bz, bw = b
     return Rotation(
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
+        bw * ax + bx * aw + by * az - bz * ay,
+        bw * ay + by * aw + bz * ax - bx * az,
+        bw * az + bz * aw + bx * ay - by * ax,
+        bw * aw - bx * ax - by * ay - bz * az,
     )
 
 
@@ -403,11 +401,31 @@ def vec_rotate(v, r):
     )
 
 
+_ARITH = {"+": operator.add, "-": operator.sub, "*": operator.mul}
+_BITS = {"&": operator.and_, "|": operator.or_, "^": operator.xor,
+         "<<": lambda a, b: a << (b & 31), ">>": lambda a, b: a >> (b & 31)}
+_COMPARE = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+_NUMBERS = ("integer", "float")
+
+
+def _fl(value):
+    """An integer operand promoted to float goes through single precision, as on the grid."""
+    return f32(value) if type(value) is int else value
+
+
 def binary(op, a, b):
     """Apply a binary operator to two LSL values with LSL typing. Raises ScriptError when invalid."""
     ta, tb = type_of(a), type_of(b)
-    num = ("integer", "float")
+    both_numbers = ta in _NUMBERS and tb in _NUMBERS
+    both_integers = ta == tb == "integer"
 
+    if op in _ARITH:
+        if both_integers:
+            return to_int32(_ARITH[op](a, b))
+        if both_numbers:
+            return f32(_ARITH[op](_fl(a), _fl(b)))
+        if op != "*" and ta == tb and ta in ("vector", "rotation"):
+            return type(a)(*map(_ARITH[op], a, b))
     if op == "+":
         if ta == "list" and tb == "list":
             return check_size(a + b)
@@ -417,38 +435,23 @@ def binary(op, a, b):
             return check_size([a] + b)
         if ta in ("string", "key") and tb in ("string", "key"):
             return check_size(str(a) + str(b))
-        if ta in num and tb in num:
-            return to_int32(a + b) if ta == tb == "integer" else f32(float(a) + float(b))
-        if ta == "vector" and tb == "vector":
-            return Vector(a[0] + b[0], a[1] + b[1], a[2] + b[2])
-        if ta == "rotation" and tb == "rotation":
-            return Rotation(a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3])
-    elif op == "-":
-        if ta in num and tb in num:
-            return to_int32(a - b) if ta == tb == "integer" else f32(float(a) - float(b))
-        if ta == "vector" and tb == "vector":
-            return Vector(a[0] - b[0], a[1] - b[1], a[2] - b[2])
-        if ta == "rotation" and tb == "rotation":
-            return Rotation(a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3])
     elif op == "*":
-        if ta in num and tb in num:
-            return to_int32(a * b) if ta == tb == "integer" else f32(float(a) * float(b))
         if ta == "vector" and tb == "vector":
             return f32(a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
-        if ta == "vector" and tb in num:
+        if ta == "vector" and tb in _NUMBERS:
             return Vector(a[0] * b, a[1] * b, a[2] * b)
-        if ta in num and tb == "vector":
+        if ta in _NUMBERS and tb == "vector":
             return Vector(b[0] * a, b[1] * a, b[2] * a)
         if ta == "vector" and tb == "rotation":
             return vec_rotate(a, b)
         if ta == "rotation" and tb == "rotation":
             return rot_mul(a, b)
     elif op == "/":
-        if ta == "integer" and tb == "integer":
+        if both_integers:
             return int_div(a, b)
-        if ta in num and tb in num:
-            return float_div(float(a), float(b))
-        if ta == "vector" and tb in num:
+        if both_numbers:
+            return float_div(_fl(a), _fl(b))
+        if ta == "vector" and tb in _NUMBERS:
             if b == 0:
                 raise ScriptError("Math Error", "division by zero")
             return Vector(a[0] / b, a[1] / b, a[2] / b)
@@ -457,43 +460,32 @@ def binary(op, a, b):
         if ta == "rotation" and tb == "rotation":
             return rot_mul(a, rot_conj(b))
     elif op == "%":
-        if ta == "integer" and tb == "integer":
+        if both_integers:
             return int_mod(a, b)
         if ta == "vector" and tb == "vector":
             return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
     elif op in ("==", "!="):
         if ta == "list" and tb == "list":
-            equal = len(a) == len(b)
-            return int(equal) if op == "==" else (len(a) - len(b))
+            return int(len(a) == len(b)) if op == "==" else (len(a) - len(b))
         if ta in ("string", "key") and tb in ("string", "key"):
             equal = str(a) == str(b)
-        elif ta in num and tb in num:
-            equal = float(a) == float(b)
+        elif both_numbers:
+            equal = _fl(a) == _fl(b)
         elif ta == tb and ta in ("vector", "rotation"):
             equal = a == b
         else:
             equal = None
         if equal is not None:
             return int(equal) if op == "==" else int(not equal)
-    elif op in ("<", "<=", ">", ">="):
-        if ta in num and tb in num:
-            fa, fb = float(a), float(b)
-            return int({"<": fa < fb, "<=": fa <= fb, ">": fa > fb, ">=": fa >= fb}[op])
-    elif op in ("&", "|", "^", "<<", ">>"):
-        if ta == "integer" and tb == "integer":
-            if op == "&":
-                return to_int32(a & b)
-            if op == "|":
-                return to_int32(a | b)
-            if op == "^":
-                return to_int32(a ^ b)
-            shift = b & 31
-            if op == "<<":
-                return to_int32(a << shift)
-            return to_int32(a >> shift)
+    elif op in _COMPARE:
+        if both_numbers:
+            return int(_COMPARE[op](_fl(a), _fl(b)))
+    elif op in _BITS:
+        if both_integers:
+            return to_int32(_BITS[op](a, b))
     elif op in ("&&", "||"):
         # both operands are always evaluated by the interpreter; here only the result
-        if ta in num and tb in num:
+        if both_numbers:
             if op == "&&":
                 return int(truthy(a) and truthy(b))
             return int(truthy(a) or truthy(b))
@@ -526,7 +518,7 @@ def lsl_repr(value):
     if t == "list":
         return "[" + ", ".join(lsl_repr(v) for v in value) + "]"
     if t == "string":
-        return '"%s"' % value
+        return repr(str(value))
     if t == "key":
-        return '(key)"%s"' % value
+        return "(key)" + repr(str(value))
     return to_string(value)

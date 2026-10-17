@@ -33,8 +33,10 @@ a warning.
    `references/testing.md`, section 1b, and `templates/tests/` for the
    shape): one test per behaviour the human asked for, driven through the
    simulator (touch, chat, dialog replies, clock, HTTP), asserting on what
-   the script said or did. Run `python -m lsltest tests/`. A failing test is
-   a bug in the script until proven otherwise.
+   the script said or did. Run `python -m lsltest tests/` from a clone of
+   the repository, or after `pip install git+https://github.com/MrWENS69/DARK_LSL_AI_LLM`
+   (which also installs the `lsltest` command). A failing test is a bug in
+   the script until proven otherwise.
 6. **Repeat until the lint says `0 error(s), 0 warning(s)` and the tests are
    green**, then give the script to the human together with those two lines
    and the in-world test plan (section 4 of `references/testing.md`). Never
