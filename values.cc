@@ -553,7 +553,7 @@ void LLScriptTypecastExpression::determine_value() {
                break;
             case LST_INTEGER:
                {
-                  char *buf = new char[11];
+                  char *buf = new char[12];
                   sprintf(buf, "%d", ((LLScriptIntegerConstant*)value)->get_value());
                   constant_value = new LLScriptStringConstant(buf);
                }

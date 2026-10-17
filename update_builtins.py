@@ -134,7 +134,7 @@ def main():
             "File: generated/builtins.txt\n" % (REPO, sha, date)
         )
 
-    body = "\n".join(l for l in text.splitlines() if not l.startswith("//"))
+    body = "\n".join(l for l in text.splitlines() if l.strip() and not l.startswith("//"))
     new_text = "// Generated from %s by update_builtins.py\n%s\n" % (stamp, body)
     parse(new_text)  # validate before writing anything
 

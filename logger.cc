@@ -203,7 +203,12 @@ void Logger::report() {
 
 LogMessage::LogMessage( LogLevel type, YYLTYPE *loc, char *message, ErrorCode error ) : type(type), error(error) {
    char *np = new char[strlen(message)+1];
-   if ( loc ) this->loc = *loc;
+   if ( loc ) {
+      this->loc = *loc;
+   } else {
+      this->loc.first_line = this->loc.first_column = 0;
+      this->loc.last_line = this->loc.last_column = 0;
+   }
    if ( np != NULL ) {
       strcpy(np, message);
       messages.push_back(np);

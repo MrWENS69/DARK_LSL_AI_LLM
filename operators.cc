@@ -28,8 +28,10 @@ LLScriptConstant *LLScriptIntegerConstant::operation(int operation, LLScriptCons
                                         case '+':           nv = value + ov;    break;
                                         case '-':           nv = value - ov;    break;
                                         case '*':           nv = value * ov;    break;
-                                        case '/':           nv = value / ov;    break;
-                                        case '%':           nv = value % ov;    break;
+                                        case '/':           if (ov == 0 || (value == INT32_MIN && ov == -1)) return NULL;
+                                                            nv = value / ov;    break;
+                                        case '%':           if (ov == 0 || (value == INT32_MIN && ov == -1)) return NULL;
+                                                            nv = value % ov;    break;
                                         case '&':           nv = value & ov;    break;
                                         case '|':           nv = value | ov;    break;
                                         case '^':           nv = value ^ ov;    break;

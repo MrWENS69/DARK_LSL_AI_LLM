@@ -69,6 +69,8 @@ static bool isKey(const char *value) {
 }
 
 void check_cond(LLScriptExpression *expr, bool warn_if_true) {
+   // a syntax error can leave a null node here; it is not an expression
+   if (expr == NULL || expr->get_node_type() != NODE_EXPRESSION) return;
    // see if expression is constant
    if ( expr->get_constant_value() != NULL ) {
       int truth = 2; // 2 denotes that it hasn't been handled
@@ -318,9 +320,18 @@ void LLScriptBreakStatement::final_pre_checks() {
 // can fail, so nobody relies on short-circuit behaviour that LSL does not have.
 
 static bool is_effect_free_builtin(const char *name) {
-   // llGet* functions that do more than read a value.
-   static const char *impure_exceptions[] = {
+   // Functions that act although their name says otherwise (queue pop, timer
+   // reset, dataserver request, forced delay).
+   static const char *acting_exact[] = {
       "llGetNextEmail", "llGetAndResetTime", "llGetNotecardLine", "llGetNumberOfNotecardLines",
+      "llGetSimulatorHostname", "llGetParcelPrimOwners",
+      NULL
+   };
+   // Effect-free functions whose name does not match a prefix below.
+   static const char *pure_exact[] = {
+      "llAvatarOnSitTarget", "llAvatarOnLinkSitTarget", "llGround", "llGroundContour",
+      "llGroundNormal", "llGroundSlope", "llScriptDanger", "llListFindStrided", "llVerifyRSA",
+      "llSignRSA", "llLinear2sRGB", "llsRGB2Linear", "llGetNotecardLineSync",
       NULL
    };
    // Builtins that only return a value: they change no script, object or world
@@ -343,8 +354,11 @@ static bool is_effect_free_builtin(const char *name) {
       NULL
    };
    int i;
-   for (i = 0; impure_exceptions[i]; ++i) {
-      if (strncmp(name, impure_exceptions[i], strlen(impure_exceptions[i])) == 0) return false;
+   for (i = 0; acting_exact[i]; ++i) {
+      if (strcmp(name, acting_exact[i]) == 0) return false;
+   }
+   for (i = 0; pure_exact[i]; ++i) {
+      if (strcmp(name, pure_exact[i]) == 0) return true;
    }
    for (i = 0; pure_prefixes[i]; ++i) {
       if (strncmp(name, pure_prefixes[i], strlen(pure_prefixes[i])) == 0) return true;
@@ -365,7 +379,8 @@ static const char *find_effect_or_failure(LLASTNode *node) {
       if (node->get_node_sub_type() == NODE_FUNCTION_EXPRESSION) {
          LLScriptIdentifier *id = (LLScriptIdentifier *)node->get_child(0);
          LLScriptSymbol *symbol = id ? id->get_symbol() : NULL;
-         if (symbol == NULL || symbol->get_sub_type() != SYM_BUILTIN) return "Call to a user function (it may act or fail)";
+         if (symbol == NULL) return NULL;   // undeclared or deprecated: already reported as an error
+         if (symbol->get_sub_type() != SYM_BUILTIN) return "Call to a user function (it may act or fail)";
          if (!is_effect_free_builtin(id->get_name())) return "Call to a builtin that acts";
       } else {
          switch (op) {
@@ -374,10 +389,16 @@ static const char *find_effect_or_failure(LLASTNode *node) {
             case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
                return "Increment or decrement";
             case '/': case '%':
-               // A literal divisor cannot be zero at runtime (zero is a compile error).
-               if (node->get_child(1) == NULL || node->get_child(1)->get_constant_value() == NULL)
+               {
+                  // Only a number divisor can raise a Math Error, and only when it can be zero.
+                  LLASTNode *divisor = node->get_child(1);
+                  LLScriptConstant *c = divisor ? divisor->get_constant_value() : NULL;
+                  LST_TYPE t = (divisor && divisor->get_type()) ? divisor->get_type()->get_itype() : LST_NULL;
+                  if (t != LST_INTEGER && t != LST_FLOATINGPOINT) break;
+                  if (c && c->get_node_sub_type() == NODE_INTEGER_CONSTANT && ((LLScriptIntegerConstant *)c)->get_value() != 0) break;
+                  if (c && c->get_node_sub_type() == NODE_FLOAT_CONSTANT && ((LLScriptFloatConstant *)c)->get_value() != 0.0f) break;
                   return "Division or modulo (can raise a Math Error)";
-               break;
+               }
          }
       }
    }

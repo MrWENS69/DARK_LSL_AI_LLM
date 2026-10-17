@@ -154,23 +154,26 @@ def download_binary(log):
             log("%s does not contain %s" % (name, BINARY))
             return None
         target = os.path.join(target_dir, BINARY)
-        with archive.open(members[0]) as src, open(target, "wb") as dst:
+        partial = target + ".part"
+        with archive.open(members[0]) as src, open(partial, "wb") as dst:
             shutil.copyfileobj(src, dst)
-    os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.chmod(partial, os.stat(partial).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.replace(partial, target)   # an interrupted download never leaves a truncated binary behind
     log("installed %s" % target)
     return target
 
 
 def find_lslint(explicit, allow_download, log):
-    candidates = []
-    if explicit:
-        candidates.append(explicit)
-    if os.environ.get("LSLINT"):
-        candidates.append(os.environ["LSLINT"])
-    candidates.append(os.path.join(HERE, BINARY))
-    for cand in candidates:
-        if os.path.isfile(cand):
-            return cand
+    # An explicit choice is final: a typo must not fall back to another binary.
+    for label, cand in (("--lslint", explicit), ("LSLINT", os.environ.get("LSLINT"))):
+        if cand:
+            if os.path.isfile(cand):
+                return cand
+            log("%s: no such file: %s" % (label, cand))
+            return None
+    local = os.path.join(HERE, BINARY)
+    if os.path.isfile(local):
+        return local
     found = shutil.which("lslint")
     # On Windows, which() may also look in the current directory: a checkout
     # that happens to contain lslint.exe must not be executed by accident.
@@ -286,6 +289,11 @@ def main(argv=None):
 
     def log(text):
         sys.stderr.write("lslcheck: %s\n" % text)
+
+    # A path with characters outside the console code page must not crash the report.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
 
     allow_download = not args.no_download and not os.environ.get("LSLCHECK_NO_DOWNLOAD")
     lslint = find_lslint(args.lslint, allow_download, log)

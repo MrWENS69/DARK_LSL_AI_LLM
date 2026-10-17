@@ -66,14 +66,13 @@ void LLScriptScript::define_builtins() {
       strcpy(original, buf);
 
       ret_type = strtok(buf,  " (),");
-      if (ret_type[0] == '/' && ret_type[1] == '/')
-         continue;
-
       if ( ret_type == NULL ) {
          fprintf(stderr, "error parsing %s: %s\n", builtins_file, original);
          exit(EXIT_FAILURE);
          return;
       }
+      if (ret_type[0] == '/' && ret_type[1] == '/')
+         continue;
 
       if (!strcmp(ret_type, "const")) {
          ret_type = strtok(NULL, " =(),");
@@ -103,24 +102,28 @@ void LLScriptScript::define_builtins() {
                      constant = new LLScriptIntegerConstant(num);
                   }
                }
+               break;
             case LST_FLOATINGPOINT:
                {
                   float num = 0.f;
                   if (sscanf(value, "%g", &num) == 1)
                      constant = new LLScriptFloatConstant(num);
                }
+               break;
             case LST_VECTOR:
                {
                   float x = 0.f, y = x, z = x;
                   if (sscanf(value, "<%f,%f,%f>", &x, &y, &z) == 3)
                      constant = new LLScriptVectorConstant(x, y, z);
                }
+               break;
             case LST_QUATERNION:
                {
                   float x = 0.f, y = x, z = x, s = 1.f;
                   if (sscanf(value, "<%f,%f,%f,%f>", &x, &y, &z, &s) == 4)
                      constant = new LLScriptQuaternionConstant(x, y, z, s);
                }
+               break;
             case LST_STRING:
                {
                   char *p = value;
