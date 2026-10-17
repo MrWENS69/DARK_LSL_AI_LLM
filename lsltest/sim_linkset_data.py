@@ -35,11 +35,13 @@ class LinksetDataMixin(object):
         for script in obj.scripts:
             script.post("linkset_data", [action, name, value])
 
-    def _linkset_fits(self, obj, name, value, old):
+    def _linkset_fits(self, obj, name, value, old, protected=False):
         """Whether writing value under name (replacing old, "" when new) stays within LINKSET_DATA_SIZE."""
         used = self._linkset_used(obj)
         if old:
             used -= len(name.encode("utf-8")) + len(old.encode("utf-8"))
+        elif protected:
+            used += 32                                   # the password's share, counted by _linkset_used
         return used + len(name.encode("utf-8")) + len(value.encode("utf-8")) <= LINKSET_DATA_SIZE
 
     def _linkset_keys(self, obj, pattern=None):
@@ -94,7 +96,7 @@ class LinksetDataMixin(object):
             return LINKSETDATA_OK
         if existing is not None and existing[0] == value:
             return LINKSETDATA_NOUPDATE
-        if not self._linkset_fits(obj, name, value, existing[0] if existing else ""):
+        if not self._linkset_fits(obj, name, value, existing[0] if existing else "", protected=True):
             return LINKSETDATA_EMEMORY
         obj.linkset_protected[name] = (value, password)
         self._linkset_event(obj, LINKSETDATA_UPDATE, name, "")

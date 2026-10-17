@@ -34,6 +34,10 @@ constants:
       line and a comment' # here
     type: string
     value: "a \\"b\\" c"
+  APOSTROPHE:
+    tooltip: # TODO
+    type: string
+    value: '0x2' # don't change
   BLOCK:
     tooltip: |
       line one
@@ -91,6 +95,7 @@ functions:
     energy: 0.0
     return: void
     sleep: 0.0
+    mono-sleep: 0.2
     tooltip: Sleeps. # trailing comment
     deprecated: true
 types:
@@ -100,7 +105,7 @@ types:
 BUILTINS = {
     "functions": {"llListen": ("integer", "integer channel, string name"), "llSleep": ("void", "float sec")},
     "events": {"state_entry": "", "listen": "integer channel, string msg"},
-    "constants": {name: ("integer", "0") for name in ("CHANGED_INVENTORY", "ATTACH_RPEC", "QUOTED", "BLOCK", "FOLDED")},
+    "constants": {name: ("integer", "0") for name in ("CHANGED_INVENTORY", "ATTACH_RPEC", "QUOTED", "BLOCK", "FOLDED", "APOSTROPHE")},
 }
 
 
@@ -118,6 +123,7 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(c["QUOTED"]["value"], 'a "b" c')
         self.assertEqual(c["BLOCK"]["tooltip"], "line one\nline two")
         self.assertEqual(c["FOLDED"]["tooltip"], "folded one folded two after a blank")
+        self.assertEqual((c["APOSTROPHE"]["tooltip"], c["APOSTROPHE"]["value"]), ("", "0x2"))
 
     def test_lists_and_arguments(self):
         e = self.defs["events"]
@@ -148,6 +154,7 @@ class BuildDocTest(unittest.TestCase):
         self.assertEqual(listen["requires-permission"], ["PERMISSION_DEBIT", "PERMISSION_ATTACH"])
         self.assertNotIn("pure", listen)
         self.assertTrue(doc["functions"]["llSleep"]["deprecated"])
+        self.assertEqual(doc["functions"]["llSleep"]["mono-sleep"], 0.2)
         self.assertEqual(doc["constants"]["ATTACH_RPEC"]["use"], "ATTACH_RIGHT_PEC")
         self.assertEqual(doc["events"]["listen"]["args"][1][:2], ["msg", "string"])
         self.assertEqual(doc["source"], ub.REPO)

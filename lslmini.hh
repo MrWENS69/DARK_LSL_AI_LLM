@@ -73,6 +73,7 @@ class LLScriptScript : public LLASTNode {
     virtual void generate_cil();
 #endif /* COMPILE_ENABLED */
     void define_builtins();
+    virtual void final_pre_checks();
     virtual const char *get_node_name() { return "script"; };
     virtual LLNodeType get_node_type() { return NODE_SCRIPT; };
     int get_switchlevel() { return switchlevel; }

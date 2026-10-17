@@ -295,9 +295,9 @@ def doc_lookup(doc, query):
         return exact
     folded = query.lower()
     same = [e for e in entries if e["name"].lower() == folded]
-    if same:
-        return same
-    return sorted((e for e in entries if e["name"].lower().startswith(folded)), key=lambda e: (e["kind"], e["name"]))
+    more = sorted((e for e in entries if e["name"].lower().startswith(folded) and e["name"].lower() != folded),
+                  key=lambda e: (e["kind"], e["name"]))
+    return same + more                      # CHANGED: the changed event, then every CHANGED_* constant
 
 
 def wiki_url(hit):
@@ -316,18 +316,20 @@ def doc_signature(hit):
 
 def doc_card(hit):
     lines = [doc_signature(hit)]
-    if hit.get("tooltip"):
-        lines.append("    " + hit["tooltip"])
+    lines += ["    " + line for line in hit.get("tooltip", "").split("\n") if hit.get("tooltip")]
     for arg in hit.get("args", []):
         if arg[2]:
             lines.append("    %s: %s" % (arg[0], arg[2]))
     if hit["kind"] == "function":
-        notes = ["forced delay %g s" % hit["sleep"], "energy %g" % hit["energy"]]
+        delay = "forced delay %g s" % hit["sleep"]
+        if "mono-sleep" in hit:
+            delay += " (Mono %g s)" % hit["mono-sleep"]
+        notes = [delay, "energy %g" % hit["energy"]]
         notes += [flag for flag in ("deprecated", "pure", "god-mode", "experience") if hit.get(flag)]
         if hit.get("requires-permission"):
             notes.append("needs %s" % ", ".join(hit["requires-permission"]))
         lines.append("    " + ", ".join(notes))
-    elif hit["kind"] == "constant" and hit.get("deprecated") and "use" not in hit.get("tooltip", "").lower():
+    elif hit["kind"] == "constant" and hit.get("deprecated") and "deprecated" not in hit.get("tooltip", "").lower():
         lines.append("    deprecated" + (", use %s" % hit["use"] if hit.get("use") else ""))
     lines.append("    " + wiki_url(hit))
     return "\n".join(lines)
@@ -351,10 +353,12 @@ def show_doc(queries, as_json, log):
         hits = item["matches"]
         if not hits:
             print("%s: no function, event or constant with that name or prefix" % item["query"])
-        elif len(hits) == 1 or hits[0]["name"] == item["query"]:
+            continue
+        if len(hits) == 1 or hits[0]["name"].lower() == item["query"].lower():
             print(_UNPRINTABLE.sub("?", doc_card(hits[0])))
-        else:
-            print("%s: %d names" % (item["query"], len(hits)))
+            hits = hits[1:]
+        if hits:
+            print("%s: %d more name%s" % (item["query"], len(hits), "" if len(hits) == 1 else "s"))
             for hit in hits[:60]:
                 print("  " + _UNPRINTABLE.sub("?", hit["signature"]))
             if len(hits) > 60:
@@ -394,6 +398,8 @@ def main(argv=None):
             stream.reconfigure(errors="backslashreplace")
 
     if args.doc:
+        if args.paths or any(name.lower().endswith(".lsl") or os.path.exists(name) for name in args.doc):
+            ap.error("--doc takes names only: run the check and --doc separately")
         return show_doc(args.doc, args.json, log)
     if not args.paths:
         ap.error("give LSL files or directories to check, or --doc NAME")

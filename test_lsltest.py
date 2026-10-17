@@ -689,6 +689,32 @@ class GuardTest(LslTestCase):
         # 5000 iterations: the periodic check (every 4096 statements) sees about 4000 local keys, 400 KB
         sim = run_script("default { state_entry() { list l; integer i; for (i = 0; i < 5000; i++) l += [llGenerateKey()]; } }")
         self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+        # a short handler (under 4096 statements) is checked when its block ends
+        sim = run_script("default { state_entry() { list l; integer i; for (i = 0; i < 3000; i++) l += [llGenerateKey()]; } }")
+        self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+        # the locals of every running function count: ten frames of 100 keys each
+        sim = run_script("""fill(integer n) { list pad; integer i; for (i = 0; i < 100; i++) pad += [llGenerateKey()]; if (n > 0) fill(n - 1); }
+            default { state_entry() { fill(9); } }""")
+        self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+        # llGetFreeMemory inside a helper sees the caller's locals
+        sim = run_script("""integer free() { return llGetFreeMemory(); }
+            default { state_entry() { list l; integer i; for (i = 0; i < 200; i++) l += [llGenerateKey()]; llOwnerSay((string)(free() < 50000)); } }""")
+        self.assertEqual(owner_heard(sim), ["1"])
+
+    def test_timer_keeps_its_rhythm_across_a_state_without_handler(self):
+        self.load("""integer n;
+            default { on_rez(integer p) { llSetTimerEvent(10.0); } timer() { n++; llOwnerSay((string)llGetTime()); } touch_start(integer k) { state paused; } }
+            state paused { touch_start(integer k) { state default; } }""")
+        self.sim.start()
+        self.sim.on_rez(0)                    # the timer is armed once, not by state_entry
+        self.sim.tick(1.0)
+        self.sim.touch()                      # paused at t=1, the timer survives
+        self.sim.tick(30.0)                   # t=31: three ticks nobody could handle
+        self.sim.touch()                      # back in default
+        self.sim.tick(2.0)                    # t=33: nothing fires yet
+        self.assertEqual(owner_heard(self.sim), [])
+        self.sim.tick(8.0)                    # t=41: the next tick of the rhythm, at 40
+        self.assertEqual(owner_heard(self.sim), ["40.000000"])
 
     def test_timer_without_a_handler_in_the_current_state_costs_nothing(self):
         sim = run_script("default { state_entry() { llSetTimerEvent(0.1); state two; } } state two { state_entry() { } }")
@@ -696,17 +722,31 @@ class GuardTest(LslTestCase):
         self.assertEqual(sim.errors, [])
 
     def test_linkset_rewrite_of_an_existing_key_counts_the_old_value_once(self):
-        # values are capped at 65536 characters, so the 128 KiB store is approached with two keys;
-        # the rewrite fits by 20 bytes only when the old value AND its name are released first
+        # 126 keys of 1000 bytes fill most of the 128 KiB; the rewrite of the 20-byte key fits only when its
+        # old value AND its name are released first (a 64 KiB script cannot hold bigger values)
         sim = run_script("""default { state_entry() {
-            string v = "x"; integer i; for (i = 0; i < 16; i++) v += v;         // 65536 characters
+            string v = "0123456789"; integer i; for (i = 0; i < 2; i++) v += v + v + v + v + v + v + v + v + v;  // 1000
+            for (i = 0; i < 126; i++) llLinksetDataWrite("k" + (string)(100 + i), v);           // 126 x 1004
+            string w = v + v + v + v + llGetSubString(v, 0, 39);                                   // 4040
             string name = "a_twenty_char_key___";
-            llOwnerSay((string)llLinksetDataWrite(name, llGetSubString(v, 0, 59999)));
-            llOwnerSay((string)llLinksetDataWrite("b", v));
-            llOwnerSay((string)llLinksetDataWrite(name, llGetSubString(v, 0, 65499)));
+            llOwnerSay((string)llLinksetDataWrite(name, llGetSubString(w, 0, 3999)));              // 130524 used
+            llOwnerSay((string)llLinksetDataWrite("b", llGetSubString(v, 0, 499)));                // 131025 used
+            llOwnerSay((string)llLinksetDataWrite(name, w));                                       // 131065 after
         } }""")
         self.assertEqual(sim.errors, [])
         self.assertEqual(owner_heard(sim), ["%d" % CONSTANTS["LINKSETDATA_OK"]] * 3)
+
+    def test_new_protected_key_counts_its_password_share(self):
+        sim = run_script("""default { state_entry() {
+            string v = "0123456789"; integer i; for (i = 0; i < 2; i++) v += v + v + v + v + v + v + v + v + v;  // 1000
+            for (i = 0; i < 130; i++) llLinksetDataWrite("k" + (string)(100 + i), v);           // 130520 used
+            llLinksetDataWrite("b", llGetSubString(v, 0, 500));                                    // 131022 used, 50 left
+            llOwnerSay((string)llLinksetDataWriteProtected("p", "01234567890123456789", "pw"));   // 1 + 20 + 32 > 50
+            llOwnerSay((string)llLinksetDataAvailable());
+        } }""")
+        self.assertEqual(sim.errors, [])
+        self.assertEqual(owner_heard(sim), ["%d" % CONSTANTS["LINKSETDATA_EMEMORY"], "50"])
+
 
 class WikiFactsTest(LslTestCase):
     """Grid facts read on the wiki, each with the page that states it in lsl-for-ai.md."""

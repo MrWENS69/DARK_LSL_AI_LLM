@@ -359,8 +359,9 @@ Do not present these as facts without checking in-world:
   is documented).
 - The evaluation order of function arguments, list elements and vector or
   rotation components (only "operands" are documented as right to left).
-  Never let one of them write a variable another one uses: `lslint -s`
-  reports it (warning 20025). lsltest evaluates arguments and list elements left to
+  Never let one of them write a variable another one uses, directly or
+  through a user function that writes a global: `lslint -s` reports it
+  (warning 20025). lsltest evaluates arguments and list elements left to
   right and vector components right to left.
 - Minimum timer interval and whether queued timer events coalesce.
 - Maximum `num_detected` for touch and collision events.

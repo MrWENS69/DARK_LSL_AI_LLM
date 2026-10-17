@@ -81,7 +81,7 @@ class Script(object):
         self.depth = 0
         self.statements_run = 0
         self.deadline = float("inf")
-        self.scopes = ()               # scope chain of the running statement, for memory_used()
+        self.frames = []               # scope chains of the running functions, for memory_used()
         self._guard(self.reset_globals)
 
     def __repr__(self):
@@ -139,7 +139,7 @@ class Script(object):
             self._guard(lambda: self._run_event(handler, args))
         finally:
             self.detected = []
-            self.scopes = ()
+            self.frames = []
         if not self.dead and self.memory_used() > self.memory_limit:
             self.die(ScriptError("Stack-Heap Collision", "about %d bytes in use" % self.memory_used()))
 
@@ -180,6 +180,7 @@ class Script(object):
             return
         if name not in self.program.states:
             raise ScriptError("Script run-time error", "unknown state %s" % name)
+        could_time = self.handles_event("timer")
         if self.handles_event("state_exit"):
             handler = self.program.states[self.state].events["state_exit"]
             try:
@@ -190,6 +191,10 @@ class Script(object):
         self.listens = {}
         self.sensor_repeat = None
         self.state = name
+        if not could_time and self.timer_due is not None and self.timer_due <= self.sim.time:
+            # the ticks the old state could not handle are gone; the rhythm goes on from the next one
+            late = self.sim.time - self.timer_due
+            self.timer_due += (int(late // self.timer_interval) + 1) * self.timer_interval
         # state_entry of the new state runs next, ahead of anything else
         if self.handles_event("state_entry"):
             self.queue.insert(0, ("state_entry", [], []))
@@ -205,8 +210,10 @@ class Script(object):
         if self.depth >= MAX_CALL_DEPTH:
             raise ScriptError("Stack-Heap Collision", "call depth over %d" % MAX_CALL_DEPTH)
         self.depth += 1
+        chain = [scope]
+        self.frames.append(chain)
         try:
-            self.exec_block(func.body, [scope])
+            self.exec_block(func.body, chain)
         except ReturnSignal as ret:
             if func.return_type is None:
                 if event and ret.value is not None:
@@ -219,6 +226,7 @@ class Script(object):
             raise ScriptError("Script run-time error", "jump to unknown label %s" % jump.label)
         finally:
             self.depth -= 1
+            self.frames.pop()
         if func.return_type is not None:
             return default_value(func.return_type)
         return None
@@ -228,17 +236,31 @@ class Script(object):
     def exec_block(self, block, scopes):
         statements = block.statements
         index = 0
-        scopes = scopes + [{}]
-        while index < len(statements):
-            stmt = statements[index]
-            try:
-                self.exec_stmt(stmt, scopes)
-                index += 1
-            except JumpSignal as jump:
-                target = self.find_label(statements, jump.label)
-                if target is None:
-                    raise
-                index = target + 1
+        scopes.append({})                  # in place: the frame list sees every live scope
+        try:
+            while index < len(statements):
+                stmt = statements[index]
+                try:
+                    self.exec_stmt(stmt, scopes)
+                    index += 1
+                except JumpSignal as jump:
+                    target = self.find_label(statements, jump.label)
+                    if target is None:
+                        raise
+                    index = target + 1
+            self._check_memory(scopes[-1])
+        except ReturnSignal:
+            self._check_memory(scopes[-1])
+            raise
+        finally:
+            scopes.pop()
+
+    def _check_memory(self, local):
+        """At the end of a block that holds real data: the grid dies when the stack meets the heap."""
+        if local and sum(value_size(value) for value in local.values()) > 1024:
+            used = self.memory_used()
+            if used > self.memory_limit:
+                raise ScriptError("Stack-Heap Collision", "about %d bytes in use" % used)
 
     @staticmethod
     def find_label(statements, label):
@@ -249,7 +271,6 @@ class Script(object):
 
     def exec_stmt(self, stmt, scopes):
         self.line = stmt.line
-        self.scopes = scopes
         self.statements_run += 1
         if self.statements_run > self.sim.max_statements:
             raise ScriptError("Script run-time error", "lsltest: over %d statements in one handler, the script is looping"
@@ -258,7 +279,7 @@ class Script(object):
             if _time.monotonic() > self.deadline:
                 raise ScriptError("Script run-time error", "lsltest: the handler ran over %g seconds"
                                   % self.sim.max_handler_seconds)
-            used = self.memory_used(scopes)
+            used = self.memory_used()
             if used > self.memory_limit:
                 raise ScriptError("Stack-Heap Collision", "about %d bytes in use" % used)
         kind = type(stmt)
@@ -408,12 +429,13 @@ class Script(object):
 
     # --- introspection for the simulator ---------------------------------
 
-    def memory_used(self, scopes=None):
+    def memory_used(self):
         """Rough estimate of the bytes this script uses: code without comments, globals, and the locals of
-        the running function (the scope chain given, or the current one). For llGetFreeMemory too."""
+        every running function. For llGetFreeMemory too."""
         data = sum(value_size(value) for value in self.globals.values())
-        for scope in (self.scopes if scopes is None else scopes):
-            data += sum(value_size(value) for value in scope.values())
+        for chain in self.frames:
+            for scope in chain:
+                data += sum(value_size(value) for value in scope.values())
         return self.code_size + data + 1024
 
     def time_since_start(self):

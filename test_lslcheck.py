@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 import lslcheck
 
@@ -117,6 +117,18 @@ class DocTest(unittest.TestCase):
         self.assertIn("integer CHANGED_INVENTORY = 0x1", out)
         self.assertIn("CHANGED_: ", out)
         self.assertIn("CHANGED_REGION_START", out)
+
+    def test_a_word_that_is_an_event_also_lists_the_constants(self):
+        code, out = self.run_doc("CHANGED")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("event changed(integer "), out)
+        self.assertIn("CHANGED_INVENTORY", out)
+
+    def test_doc_mixed_with_paths_is_a_usage_error(self):
+        for argv in (["--doc", "llSay", "script.lsl"], ["script.lsl", "--doc", "llSay"]):
+            with self.assertRaises(SystemExit):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    lslcheck.main(argv)
 
     def test_unknown_name_fails(self):
         code, out = self.run_doc("llNoSuchThing")

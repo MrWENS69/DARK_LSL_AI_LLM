@@ -146,7 +146,7 @@ def report(old_text, new_text):
 
 DOC_JSON = ROOT / "lsltest" / "data" / "lsl_doc.json"
 DOC_SECTIONS = ("constants", "events", "functions")
-_QUOTED = {"'": re.compile(r"'(?:[^']|'')*'(\s+#.*)?"), '"': re.compile(r'"(?:[^"\\]|\\.)*"(\s+#.*)?')}
+_QUOTED = {"'": re.compile(r"'((?:[^']|'')*)'(\s+#.*)?"), '"': re.compile(r'"((?:[^"\\]|\\.)*)"(\s+#.*)?')}
 _FORBIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
 
 
@@ -177,7 +177,7 @@ def _gather(lines, i, rest, done):
 
 
 def _plain(text):
-    return re.sub(r"\s+#.*$", "", text).strip()           # drops a trailing comment
+    return re.sub(r"(^|\s+)#.*$", "", text).strip()       # drops a trailing comment, or a value that is one
 
 
 def _scalar(lines, i, indent, rest):
@@ -188,7 +188,7 @@ def _scalar(lines, i, indent, rest):
         return [s.strip().strip("'\"") for s in inner.split(",") if s.strip()], j
     if rest[0] in _QUOTED:
         text, j = _gather(lines, i, rest, lambda t: _QUOTED[rest[0]].fullmatch(t) is not None)
-        body = text[1:text.rindex(rest[0])]
+        body = _QUOTED[rest[0]].fullmatch(text).group(1)
         if rest[0] == "'":
             return body.replace("''", "'"), j
         try:
@@ -325,6 +325,8 @@ def build_doc(defs, functions, events, constants):
         item = {"return": _text(name, entry.get("return", "")).replace("quaternion", "rotation"),
                 "args": _arguments(name, entry), "tooltip": _text(name, entry.get("tooltip", "")),
                 "sleep": float(entry.get("sleep", "x")), "energy": float(entry.get("energy", "x"))}
+        if "mono-sleep" in entry:
+            item["mono-sleep"] = float(entry["mono-sleep"])  # the delay under Mono when it differs from LSO
         for flag in ("deprecated", "pure", "god-mode", "experience"):
             if _flag(entry.get(flag, "")):
                 item[flag] = True

@@ -449,56 +449,170 @@ void LLScriptExpression::final_pre_checks() {
 // documented. A variable written in one of them (assignment, ++, --) and read
 // or written in another gives a result that depends on that order.
 
-// Names the subtree writes (assignment targets) and reads (every variable).
-static void collect_variable_uses(LLASTNode *node, std::set<std::string> &reads, std::set<std::string> &writes) {
-   LLASTNode *child;
+// The global variables each user function writes, directly or through the
+// user functions it calls; filled once per script before the walk.
+typedef std::map<std::string, std::set<std::string> > NameSets;
+static NameSets global_writes_of;
+
+// `v' for a variable, `v.x' for one of its components.
+static std::string use_key(LLScriptIdentifier *id) {
+   std::string key = id->get_name();
+   if (id->get_member()) {
+      key += ".";
+      key += id->get_member();
+   }
+   return key;
+}
+
+static LLScriptIdentifier *assignment_target(LLASTNode *node) {
    LLASTNode *target;
-   LLScriptSymbol *symbol;
-   int op;
+   int op = ((LLScriptExpression *)node)->get_operation();
+   switch (op) {
+      case '=': case ADD_ASSIGN: case SUB_ASSIGN: case MUL_ASSIGN: case DIV_ASSIGN: case MOD_ASSIGN:
+      case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
+         target = node->get_child(0);
+         if (target && target->get_node_type() == NODE_EXPRESSION
+             && target->get_node_sub_type() == NODE_LVALUE_EXPRESSION)
+            target = target->get_child(0);
+         if (target && target->get_node_type() == NODE_IDENTIFIER)
+            return (LLScriptIdentifier *)target;
+   }
+   return NULL;
+}
+
+static LLScriptIdentifier *called_user_function(LLASTNode *node) {
+   LLScriptIdentifier *id;
+   if (node->get_node_sub_type() != NODE_FUNCTION_EXPRESSION) return NULL;
+   id = (LLScriptIdentifier *)node->get_child(0);
+   if (id == NULL || id->get_symbol() == NULL || id->get_symbol()->get_sub_type() == SYM_BUILTIN) return NULL;
+   return id;
+}
+
+// Direct writes to globals and calls to user functions inside one function body.
+static void collect_global_writes(LLASTNode *node, std::set<std::string> &writes, std::set<std::string> &calls) {
+   LLASTNode *child;
+   LLScriptIdentifier *id;
    if (node == NULL) return;
    if (node->get_node_type() == NODE_EXPRESSION) {
-      op = ((LLScriptExpression *)node)->get_operation();
-      switch (op) {
-         case '=': case ADD_ASSIGN: case SUB_ASSIGN: case MUL_ASSIGN: case DIV_ASSIGN: case MOD_ASSIGN:
-         case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
-            target = node->get_child(0);
-            if (target && target->get_node_type() == NODE_EXPRESSION
-                && target->get_node_sub_type() == NODE_LVALUE_EXPRESSION)
-               target = target->get_child(0);
-            if (target && target->get_node_type() == NODE_IDENTIFIER)
-               writes.insert(((LLScriptIdentifier *)target)->get_name());
-            break;
+      id = assignment_target(node);
+      if (id && id->get_symbol() && id->get_symbol()->get_sub_type() == SYM_GLOBAL)
+         writes.insert(id->get_name());
+      id = called_user_function(node);
+      if (id) calls.insert(id->get_name());
+   }
+   for (child = node->get_children(); child; child = child->get_next())
+      collect_global_writes(child, writes, calls);
+}
+
+static void collect_functions(LLASTNode *node, NameSets &calls_of) {
+   LLASTNode *child;
+   LLScriptIdentifier *id;
+   if (node == NULL) return;
+   if (node->get_node_type() == NODE_GLOBAL_FUNCTION) {
+      id = (LLScriptIdentifier *)node->get_child(0);
+      if (id) collect_global_writes(node->get_child(2), global_writes_of[id->get_name()], calls_of[id->get_name()]);
+      return;
+   }
+   for (child = node->get_children(); child; child = child->get_next())
+      collect_functions(child, calls_of);
+}
+
+void LLScriptScript::final_pre_checks() {
+   NameSets calls_of;
+   NameSets::iterator f;
+   std::set<std::string>::iterator c;
+   bool changed = true;
+   global_writes_of.clear();
+   if (!warn_side_effects) return;
+   collect_functions(this, calls_of);          // the global storages are siblings under the script node
+   while (changed) {                       // a function also writes what the functions it calls write
+      changed = false;
+      for (f = calls_of.begin(); f != calls_of.end(); ++f) {
+         std::set<std::string> &mine = global_writes_of[f->first];
+         for (c = f->second.begin(); c != f->second.end(); ++c) {
+            std::set<std::string> &theirs = global_writes_of[*c];
+            size_t before = mine.size();
+            mine.insert(theirs.begin(), theirs.end());
+            if (mine.size() != before) changed = true;
+         }
+      }
+   }
+}
+
+// Names the subtree writes (assignment targets, the globals of the user functions it calls)
+// and reads (every variable, by component when one is named).
+static void collect_variable_uses(LLASTNode *node, std::set<std::string> &reads, std::set<std::string> &writes) {
+   LLASTNode *child;
+   LLScriptIdentifier *id;
+   LLScriptSymbol *symbol;
+   NameSets::iterator f;
+   if (node == NULL) return;
+   if (node->get_node_type() == NODE_EXPRESSION) {
+      id = assignment_target(node);
+      if (id) writes.insert(use_key(id));
+      id = called_user_function(node);
+      if (id && (f = global_writes_of.find(id->get_name())) != global_writes_of.end()) {
+         writes.insert(f->second.begin(), f->second.end());
+         reads.insert(f->second.begin(), f->second.end());
       }
    } else if (node->get_node_type() == NODE_IDENTIFIER) {
       symbol = ((LLScriptIdentifier *)node)->get_symbol();
       if (symbol && symbol->get_symbol_type() == SYM_VARIABLE)
-         reads.insert(((LLScriptIdentifier *)node)->get_name());
+         reads.insert(use_key((LLScriptIdentifier *)node));
    }
    for (child = node->get_children(); child; child = child->get_next())
       collect_variable_uses(child, reads, writes);
 }
 
+static std::string base_of(const std::string &key) {
+   size_t dot = key.find('.');
+   return dot == std::string::npos ? key : key.substr(0, dot);
+}
+
 static void check_sibling_writes(LLASTNode *first, const char *what) {
    std::vector<LLASTNode *> siblings;
-   std::vector<std::set<std::string> > reads;
+   std::vector<std::set<std::string> > uses;       // keys a sibling reads or writes (`v' or `v.x')
    std::vector<std::set<std::string> > writes;
-   std::map<std::string, int> users;            // how many siblings read or write each name
+   std::map<std::string, int> users;               // siblings using each key
+   std::map<std::string, int> whole_users;         // siblings using a variable as a whole
+   std::map<std::string, int> member_users;        // siblings using one of its components
    std::set<std::string>::iterator name;
+   std::set<std::string> seen;
    LLASTNode *node;
    size_t i;
    if (!warn_side_effects || first == NULL || first->get_next() == NULL) return;
    for (node = first; node; node = node->get_next()) {
+      std::set<std::string> reads;
       siblings.push_back(node);
-      reads.push_back(std::set<std::string>());
       writes.push_back(std::set<std::string>());
-      collect_variable_uses(node, reads.back(), writes.back());
-      for (name = reads.back().begin(); name != reads.back().end(); ++name)
+      collect_variable_uses(node, reads, writes.back());
+      reads.insert(writes.back().begin(), writes.back().end());
+      uses.push_back(reads);
+      seen.clear();
+      for (name = reads.begin(); name != reads.end(); ++name) {
+         std::string base = base_of(*name);
          users[*name] += 1;
-      for (name = writes.back().begin(); name != writes.back().end(); ++name)
-         if (!reads.back().count(*name)) users[*name] += 1;
+         if (base == *name) whole_users[base] += 1;
+         else if (seen.insert(base).second) member_users[base] += 1;
+      }
    }
-   for (i = 0; i < siblings.size(); ++i)
-      for (name = writes[i].begin(); name != writes[i].end(); ++name)
-         if (users[*name] > 1)
+   for (i = 0; i < siblings.size(); ++i) {
+      for (name = writes[i].begin(); name != writes[i].end(); ++name) {
+         std::string base = base_of(*name);
+         bool conflict;
+         if (base == *name) {
+            // the whole variable: another sibling using it, or one of its components, conflicts
+            bool mine = false;
+            std::set<std::string>::iterator k;
+            for (k = uses[i].begin(); k != uses[i].end() && !mine; ++k)
+               mine = *k != base && base_of(*k) == base;
+            conflict = users[*name] > 1 || member_users[base] > (mine ? 1 : 0);
+         } else {
+            // one component: the same component elsewhere, or the whole variable elsewhere
+            conflict = users[*name] > 1 || whole_users[base] > (uses[i].count(base) ? 1 : 0);
+         }
+         if (conflict)
             ERROR( IN(siblings[i]), W_SIBLING_WRITE_ORDER, name->c_str(), what );
+      }
+   }
 }

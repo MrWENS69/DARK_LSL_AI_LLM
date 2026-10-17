@@ -72,8 +72,9 @@ exit codes. Both get builtins that match the live grid.
   (`llModPow`, `llXorBase64Strings`, `llGetParcelPrimOwners`): the script
   stalls, nothing changes. The second rule (warning 20025) reports a
   variable written in one function argument, list element, vector or
-  rotation component and used in another: Linden Lab does not document the
-  order those are evaluated in.
+  rotation component and used in another, the writes made by the user
+  functions it calls included: Linden Lab does not document the order those
+  are evaluated in.
 - **`lslcheck --doc NAME`**: the reference of any function, event or
   constant without leaving the terminal: signature, what it does, each
   parameter, forced delay and energy, the wiki page. Generated from Linden

@@ -24,11 +24,17 @@ default
         vector v;
         rotation r;
         string s;
+        vector p = <1.0, 2.0, 3.0>;
 
         s = pair(i, i + 1);                                       // reads only: fine
         s = pair(i++, j);                                         // written in one, j in the other: fine
         v = <i, i, i>;                                            // reads only: fine
-        data = [next(), next()];                                  // calls, no direct write: fine (warning 20024's business)
+        data = [next(), next()];                                  // $[E20025] $[E20025] next() writes gCount in both elements
+        s = pair(next(), gCount);                                 // $[E20025] written through a call, read directly
+        s = pair(llAbs(i), i);                                    // a builtin writes nothing: fine
+        v = <p.x = 1.0, p.y, p.z>;                                // different components: fine
+        v = <p.x = 1.0, p.x, 0.0>;                                // $[E20025] the same component twice
+        data = [p.x = 1.0, p];                                    // $[E20025] a component and the whole vector
         s = pair(i++, i);                                         // $[E20025] i written in one argument, read in another
         s = pair(i, (i = 2));                                     // $[E20025] assignment in one argument
         data = [i++, i];                                          // $[E20025] list elements
