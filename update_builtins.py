@@ -412,7 +412,7 @@ def main():
     body = "\n".join(l for l in text.splitlines() if l.strip() and not l.startswith("//"))
     new_text = "// Generated from %s by update_builtins.py\n%s\n" % (stamp, body)
     functions, events, constants = parse(new_text)  # validate before writing anything
-    doc = build_doc(read_definitions(yaml_text), functions, events, constants) if yaml_text else None
+    doc = build_doc(read_definitions(yaml_text), functions, events, constants) if yaml_text is not None else None
 
     old_text = BUILTINS_TXT.read_text(encoding="utf-8") if BUILTINS_TXT.exists() else ""
     report(old_text, new_text)

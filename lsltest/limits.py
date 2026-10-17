@@ -58,3 +58,6 @@ MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the sc
 MAX_HANDLER_SECONDS = 20.0    # wall-clock time per event handler, for builtins that cost more than a statement
                               # (sim.max_handler_seconds)
 RECURSION_LIMIT = 2500        # Python frames allowed while a handler runs: enough for MAX_CALL_DEPTH
+MAX_NESTING = 120             # nested expressions or blocks the parser accepts (about 15 frames each)
+PARSER_RECURSION_LIMIT = 3000 # Python frames the parser may use: MAX_NESTING levels and some margin
+MAX_VECTOR_TRY = 4            # nested vector literals whose components get the two-pass parse

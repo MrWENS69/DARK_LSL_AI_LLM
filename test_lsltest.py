@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for lsltest: parser, LSL semantics, simulator. Run: python -m unittest -v test_lsltest"""
 
+import os
 import unittest
 
 from lsltest import LslSyntaxError, LslTestCase, ScriptError, Simulator, UnsupportedError
@@ -715,6 +716,15 @@ class GuardTest(LslTestCase):
         self.assertEqual(owner_heard(self.sim), [])
         self.sim.tick(8.0)                    # t=41: the next tick of the rhythm, at 40
         self.assertEqual(owner_heard(self.sim), ["40.000000"])
+
+    def test_a_script_file_over_one_megabyte_is_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "big.lsl")
+            with open(path, "w") as handle:
+                handle.write("default { state_entry() { } }" + " " * 1100000)
+            with self.assertRaises(LslSyntaxError):
+                self.load(path)
 
     def test_timer_without_a_handler_in_the_current_state_costs_nothing(self):
         sim = run_script("default { state_entry() { llSetTimerEvent(0.1); state two; } } state two { state_entry() { } }")

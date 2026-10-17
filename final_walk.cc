@@ -530,6 +530,7 @@ void LLScriptScript::final_pre_checks() {
       for (f = calls_of.begin(); f != calls_of.end(); ++f) {
          std::set<std::string> &mine = global_writes_of[f->first];
          for (c = f->second.begin(); c != f->second.end(); ++c) {
+            if (*c == f->first) continue;          // a recursive call adds nothing
             std::set<std::string> &theirs = global_writes_of[*c];
             size_t before = mine.size();
             mine.insert(theirs.begin(), theirs.end());

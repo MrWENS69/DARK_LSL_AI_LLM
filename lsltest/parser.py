@@ -18,14 +18,12 @@ A '<' at the start of an operand opens a vector or rotation literal.
 import sys
 
 from . import nodes
+from .limits import MAX_NESTING, MAX_VECTOR_TRY, PARSER_RECURSION_LIMIT
 from .errors import LslSyntaxError
 from .lexer import tokenize
 
 TYPES = ("integer", "float", "string", "key", "vector", "rotation", "quaternion", "list")
 
-MAX_NESTING = 120             # nested expressions or blocks a script may have (about 15 frames each)
-RECURSION_LIMIT = 3000        # Python frames the parser may use: MAX_NESTING levels and some margin
-MAX_VECTOR_TRY = 4            # nested vector literals whose components get the two-pass parse
 _BINARY_LEVELS = [
     ("&&", "||"),
     ("|",),
@@ -442,7 +440,7 @@ class Parser(object):
 def parse(source):
     """Parse LSL source text into an nodes.Program."""
     old = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(old, RECURSION_LIMIT))
+    sys.setrecursionlimit(max(old, PARSER_RECURSION_LIMIT))
     try:
         return Parser(source).parse_program()
     except RecursionError:

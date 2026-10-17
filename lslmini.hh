@@ -41,7 +41,9 @@ inline bool is_printable_operator(int op) { return op > 0 && op < 128 && isprint
 #include "types.hh"
 
 #ifdef _MSC_VER
-#define snprintf _snprintf
+#if _MSC_VER < 1900
+#define snprintf _snprintf   // VS2015 and later have the conforming, NUL-terminating snprintf
+#endif
 #define strdup _strdup
 #pragma warning( disable : 4996 4100 4267 4127 4244 )
 #endif
