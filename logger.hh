@@ -118,6 +118,7 @@ enum ErrorCode {
     W_KEY_OR_STR_TO_LIST,              // 20021
     W_DUPLICATE_LABEL_LSO,             // 20022
     W_UNINITIALIZED_VAR_IN_STR_KEY,    // 20023
+    W_SIDE_EFFECT_IN_LOGICAL_OP,       // 20024
     W_LAST
 
 };

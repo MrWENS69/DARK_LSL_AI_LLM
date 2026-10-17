@@ -92,6 +92,7 @@ bool switch_stmt = false;
 bool lazy_lists = false;
 bool override_fn = false;
 bool god_mode = false;
+bool warn_side_effects = false;
 
 void print_walk( char *str ) {
    int i;
@@ -168,10 +169,9 @@ void LLASTNode::define_symbol(LLScriptSymbol *symbol) {
                || (lazy_lists && !strcmp(shadow->get_name(), "lazy_list_set")))
            && shadow->get_symbol_type() == SYM_FUNCTION
            && shadow->get_sub_type() != SYM_BUILTIN ) {
-         script->get_symbol_table()->remove(shadow);
          // Unlink the previous definition but keep the object alive: identifiers of the
          // earlier declaration still point to it and are read again in final_pre_checks().
-         delete shadow;
+         script->get_symbol_table()->remove(shadow);
          shadow = NULL;
       }
 
@@ -975,6 +975,7 @@ void usage(const char *name) {
    printf("\t-a\t\tFlag: Don't report marked warnings/errors (default on)\n");
    printf("\t-i\t\tFlag: Ignore preprocessor directives (default off)\n");
    printf("\t-u\t\tFlag: Warn about unused event parameters (default off)\n");
+   printf("\t-s\t\tFlag: Warn about side effects in && / || operands (default off)\n");
    printf("\t-w\t\tFlag: Enable switch statements (default off)\n");
    printf("\t-z\t\tFlag: Enable lazy list syntax (default off)\n");
    printf("\t-G\t\tFlag: Enable god mode (default off)\n");
@@ -1045,7 +1046,6 @@ int main(int argc, const char **argv) {
    void *scanner;
    Logger *logger = Logger::get();
 
-   logger->set_check_assertions(EXPECTED_ASSERTIONS);
 #ifdef _MSC_VER
    // A lint tool runs from scripts and CI: report aborts and assertions on
    // stderr, never through a modal dialog box.
@@ -1059,6 +1059,7 @@ int main(int argc, const char **argv) {
 #endif
 #endif
 
+   logger->set_check_assertions(EXPECTED_ASSERTIONS);
 
 #ifdef COMPILE_ENABLED
    bool compile   = true;
@@ -1115,6 +1116,12 @@ int main(int argc, const char **argv) {
                      warn_unused_evparam = false;
                      j++;
                   } else warn_unused_evparam = true;
+                  break;
+               case 's':
+                  if (argv[i][j+1] == '-') {
+                     warn_side_effects = false;
+                     j++;
+                  } else warn_side_effects = true;
                   break;
                case 'w':
                   if (argv[i][j+1] == '-') {

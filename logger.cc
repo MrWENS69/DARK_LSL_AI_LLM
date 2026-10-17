@@ -326,5 +326,7 @@ const char *Logger::warning_messages[] = {
       " unexpected behaviour (jumps will go to the last label found)",// 20022
    "Initializing a global key or string using an uninitialized"
       " variable causes a runtime error when accessing it",           // 20023
+   "%s in the %s operand of `%s' always runs: LSL does not short-circuit"
+      " && and ||, and the right operand is evaluated first. Use a nested if.", // 20024
 
 };

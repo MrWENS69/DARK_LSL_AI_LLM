@@ -309,3 +309,85 @@ void LLScriptBreakStatement::final_pre_checks() {
       ERROR( HERE, E_BREAK_WITHOUT_SWITCH );
    }
 }
+
+// -s: side effects in && / || operands.
+//
+// LSL evaluates both operands of && and || unconditionally, and the right
+// operand first. C-style guards such as `if (x != 0 && f(x))' therefore do not
+// prevent f() from running. Report operands whose evaluation is observable or
+// can fail, so nobody relies on short-circuit behaviour that LSL does not have.
+
+static bool is_pure_builtin(const char *name) {
+   // Builtins that only compute a result. Prefix match, conservative on purpose.
+   static const char *pure_prefixes[] = {
+      "llGet", "llDetected", "llList2", "llListFindList", "llListSort", "llListStatistics",
+      "llListRandomize", "llListInsertList", "llListReplaceList", "llDeleteSub",
+      "llInsertString", "llSubStringIndex", "llStringLength", "llStringTrim",
+      "llStringToBase64", "llBase64To", "llIntegerToBase64", "llXorBase64", "llToUpper",
+      "llToLower", "llCSV2List", "llParseString", "llDumpList2String", "llEscapeURL",
+      "llUnescapeURL", "llChar", "llOrd", "llHash", "llMD5String", "llSHA", "llHMAC",
+      "llComputeHash", "llJson", "llReplaceSubString", "llAbs", "llFabs", "llFloor",
+      "llCeil", "llRound", "llSqrt", "llPow", "llLog", "llSin", "llCos", "llTan", "llAtan2",
+      "llAsin", "llAcos", "llModPow", "llFrand", "llVec", "llRot2", "llRotBetween",
+      "llEuler2Rot", "llAxes2Rot", "llAxisAngle2Rot", "llAngleBetween", "llSameGroup",
+      "llOverMyLand", "llKey2Name", "llName2Key", "llIsFriend", "llAgentInExperience",
+      "llEdgeOfWorld", "llWater", "llWind", "llCloud", "llLinksetDataRead",
+      "llLinksetDataCount", "llLinksetDataListKeys", "llLinksetDataFindKeys",
+      "llLinksetDataAvailable", "llGenerateKey", "llIsLinkGLTFMaterial",
+      NULL
+   };
+   int i;
+   for (i = 0; pure_prefixes[i]; ++i) {
+      if (strncmp(name, pure_prefixes[i], strlen(pure_prefixes[i])) == 0) return true;
+   }
+   return false;
+}
+
+// Returns a description of the first side effect found in the subtree, or NULL.
+// Nested && / || expressions are skipped: they report their own operands.
+static const char *find_side_effect(LLASTNode *node) {
+   LLASTNode *child;
+   if (node == NULL) return NULL;
+   if (node->get_node_type() == NODE_EXPRESSION) {
+      LLScriptExpression *expr = (LLScriptExpression *)node;
+      if (node->get_node_sub_type() == NODE_FUNCTION_EXPRESSION) {
+         LLScriptIdentifier *id = (LLScriptIdentifier *)node->get_child(0);
+         LLScriptSymbol *symbol = id ? id->get_symbol() : NULL;
+         if (symbol == NULL || symbol->get_sub_type() != SYM_BUILTIN) return "Call to a user function";
+         if (!is_pure_builtin(id->get_name())) return "Call to a builtin with side effects";
+      } else {
+         switch (expr->get_operation()) {
+            case BOOLEAN_AND:
+            case BOOLEAN_OR:
+               return NULL;
+            case '=': case ADD_ASSIGN: case SUB_ASSIGN: case MUL_ASSIGN: case DIV_ASSIGN: case MOD_ASSIGN:
+               return "Assignment";
+            case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
+               return "Increment or decrement";
+            case '/': case '%':
+               return "Division or modulo (can raise a Math Error)";
+         }
+      }
+   }
+   for (child = node->get_children(); child; child = child->get_next()) {
+      const char *found = find_side_effect(child);
+      if (found) return found;
+   }
+   return NULL;
+}
+
+void LLScriptExpression::final_pre_checks() {
+   const char *found;
+   LLASTNode *lhs;
+   LLASTNode *rhs;
+   const char *op;
+   if (!warn_side_effects) return;
+   if (operation != BOOLEAN_AND && operation != BOOLEAN_OR) return;
+   op = operation == BOOLEAN_AND ? "&&" : "||";
+   lhs = get_child(0);
+   rhs = get_child(1);
+   found = find_side_effect(rhs);
+   if (found) ERROR( IN(rhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "right", op );
+   found = find_side_effect(lhs);
+   if (found) ERROR( IN(lhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "left", op );
+}

@@ -28,6 +28,7 @@ extern bool warn_unused_evparam;
 extern bool switch_stmt;
 extern bool lazy_lists;
 extern bool god_mode;
+extern bool warn_side_effects;
 void print_walk(char *str);
 void do_walk(class LLASTNode *node);
 
@@ -543,6 +544,7 @@ class LLScriptExpression : public LLASTNode {
 
     virtual void determine_type();
     virtual void determine_value();
+    virtual void final_pre_checks();
 
     virtual const char *get_node_name() {
       static char buf[256];
