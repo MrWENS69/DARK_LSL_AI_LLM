@@ -522,9 +522,10 @@ def llHash(text):
 
 # --- JSON ----------------------------------------------------------------------
 
-def _json_value_from_lsl(value, numeric_strings=False):
+def _json_value_from_lsl(value, numeric_strings=False, literal_words=False):
     """An LSL value as a JSON node. numeric_strings: a string that reads as a number becomes a number
-    (llJsonSetValue does that, llList2Json keeps it a string: wiki, BUG-6284)."""
+    (llJsonSetValue does that, llList2Json keeps it a string: wiki, BUG-6284). literal_words: the plain
+    strings "true", "false" and "null" become JSON literals (llList2Json does that: wiki)."""
     t = type_of(value)
     if t == "integer":
         return value
@@ -538,6 +539,8 @@ def _json_value_from_lsl(value, numeric_strings=False):
             return False
         if s == JSON_NULL:
             return None
+        if literal_words and s in ("true", "false", "null"):
+            return {"true": True, "false": False, "null": None}[s]
         stripped = s.strip()
         if numeric_strings and _JSON_NUMBER.match(stripped):
             return _RawNumber(stripped)       # "10" is stored as the number 10 (wiki llJsonSetValue example)
@@ -676,10 +679,10 @@ def llList2Json(json_type, values):
             return JSON_INVALID
         obj = {}
         for i in range(0, len(values), 2):
-            obj[to_string(values[i])] = _json_value_from_lsl(values[i + 1])
+            obj[to_string(values[i])] = _json_value_from_lsl(values[i + 1], literal_words=True)
         return _dumps(obj)
     if json_type == JSON_ARRAY:
-        return _dumps([_json_value_from_lsl(v) for v in values])
+        return _dumps([_json_value_from_lsl(v, literal_words=True) for v in values])
     return JSON_INVALID
 
 

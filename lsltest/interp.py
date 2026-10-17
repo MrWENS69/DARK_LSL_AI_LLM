@@ -46,8 +46,9 @@ class StateChangeSignal(Exception):
 
 MAX_CALL_DEPTH = 150          # the grid dies with "Stack-Heap Collision" long before this
 MAX_QUEUE = 64                # events queued per script; more are dropped silently
-MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping
+MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping (sim.max_statements)
 MAX_HANDLER_SECONDS = 20.0    # wall-clock time per event handler, for builtins that cost more than a statement
+                              # (sim.max_handler_seconds)
 RECURSION_LIMIT = 2500        # Python frames allowed while a handler runs: enough for MAX_CALL_DEPTH
 
 
@@ -155,7 +156,7 @@ class Script(object):
     def _guard(self, action):
         """Run action() under the script's limits; ScriptError and Python failures kill the script."""
         self.statements_run = 0
-        self.deadline = _time.monotonic() + MAX_HANDLER_SECONDS
+        self.deadline = _time.monotonic() + self.sim.max_handler_seconds
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(max(old_limit, RECURSION_LIMIT))
         try:
@@ -252,10 +253,16 @@ class Script(object):
     def exec_stmt(self, stmt, scopes):
         self.line = stmt.line
         self.statements_run += 1
-        if self.statements_run > MAX_STATEMENTS:
-            raise ScriptError("Script run-time error", "statement budget exhausted (infinite loop?)")
-        if self.statements_run & 4095 == 0 and _time.monotonic() > self.deadline:
-            raise ScriptError("Script run-time error", "lsltest: the handler ran over %d seconds" % MAX_HANDLER_SECONDS)
+        if self.statements_run > self.sim.max_statements:
+            raise ScriptError("Script run-time error", "lsltest: over %d statements in one handler, the script is looping"
+                              % self.sim.max_statements)
+        if self.statements_run & 4095 == 0:
+            if _time.monotonic() > self.deadline:
+                raise ScriptError("Script run-time error", "lsltest: the handler ran over %g seconds"
+                                  % self.sim.max_handler_seconds)
+            used = self.memory_used(scopes)
+            if used > self.memory_limit:
+                raise ScriptError("Stack-Heap Collision", "about %d bytes in use" % used)
         kind = type(stmt)
         if kind is nodes.ExprStatement:
             self.eval_expr(stmt.expr, scopes)
@@ -403,13 +410,13 @@ class Script(object):
 
     # --- introspection for the simulator ---------------------------------
 
-    def memory_used(self):
-        """Rough estimate of the bytes this script uses (code without comments, globals), for llGetFreeMemory."""
-        code = self.code_size
-        data = 0
-        for value in self.globals.values():
-            data += value_size(value)
-        return code + data + 1024
+    def memory_used(self, scopes=()):
+        """Rough estimate of the bytes this script uses: code without comments, globals, and the locals
+        of the scope chain given (the running function's, at the periodic check). For llGetFreeMemory."""
+        data = sum(value_size(value) for value in self.globals.values())
+        for scope in scopes:
+            data += sum(value_size(value) for value in scope.values())
+        return self.code_size + data + 1024
 
     def time_since_start(self):
         return f32(self.sim.time - self.start_time)

@@ -133,18 +133,20 @@ returned from an event handler is an error.
 
 lsltest's own guards, not grid limits: a call depth of 150 (the event
 handler counts as the first), a string or list over 65536 items, two million
-statements or 20 seconds in one handler, 10000 rounds of scripts posting
-events to each other in one `run()`, 100000 timer or sensor steps in one
-`tick()`, 100000 records of one kind (chat lines, requests...). The first
-three kill the script with a `ScriptError`; the `run()` and `tick()` guards
-raise `RuntimeError` in the test: shorten the tick or the timer, or fix the
-loop. Error messages name the script line.
+statements or 20 seconds in one handler (`sim.max_statements`,
+`sim.max_handler_seconds`), 10000 rounds of scripts posting events to each
+other in one `run()`, 100000 timer or sensor steps in one `tick()`, 100000
+records of one kind (chat lines, requests...). The first three kill the
+script with a `ScriptError`; the `run()` and `tick()` guards raise
+`RuntimeError` in the test: shorten the tick or the timer, or fix the loop.
+Error messages name the script line.
 
 What it does not model: physics, movement, chat range (every listener in the
 region hears), rendering, region crossings, avatar animations beyond
 recording the call, prim parameters (recorded), sensors beyond distance to
 the avatars and objects you created, money beyond the event, memory beyond a
-rough count of the code and the globals. A builtin it does not model is
+rough count of the code, the globals and the locals of the running function
+(checked every 4096 statements and after each handler). A builtin it does not model is
 recorded with its arguments and returns the type's default value; `strict =
 True` on the test class (or `Simulator(strict=True)`) raises instead, when a
 test must not pass by accident.

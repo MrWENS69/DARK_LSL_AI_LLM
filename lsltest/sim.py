@@ -7,6 +7,7 @@ data, hover text, inventory, and every call to a builtin it does not model
 (recorded with its arguments, so nothing is silently lost).
 """
 
+import datetime
 import os
 import random
 import re
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 from . import pure
 from ._version import __version__
 from .errors import LslSyntaxError, ResetSignal, ScriptError, UnsupportedError
-from .interp import Script
+from .interp import MAX_HANDLER_SECONDS, MAX_STATEMENTS, Script
 from .signatures import CONSTANTS, SIGNATURES
 from .values import (Key, Vector, f32, check_size, coerce, default_value, to_string, to_int32, type_of,
                      ZERO_VECTOR, ZERO_ROTATION, NULL_KEY, is_valid_key)
@@ -68,7 +69,6 @@ HTTP_BODY_DEFAULT = 2048      # bytes of an HTTP response body kept without HTTP
 MIN_TIMER = 0.022             # one simulator frame: shorter timers and sensor rates are rounded up to it
 MAX_SLEEP = 31536000.0        # one year: llSleep never moves the clock further in one call
 SENSOR_MAX = 32               # results of one sensor scan, nearest first (16 before March 2024)
-SLT_OFFSET = -8 * 3600        # Second Life Time for llGetWallclock, taken as UTC-8 all year
 RECORD_ONLY = frozenset(("llGiveInventory", "llTakeControls", "llReleaseControls", "llStartAnimation",
                          "llStopAnimation"))   # modelled as "record the call", even under strict
 
@@ -79,6 +79,16 @@ MAX_RECORDS = 100000          # chat lines, dialogs, requests... of one kind the
 MAX_PATTERN_LEN = 256         # llLinksetDataFindKeys patterns longer than this match nothing...
 MAX_MATCH_LEN = 256           # ...and only the first characters of a key are matched
 MAX_SCRIPT_BYTES = 1048576    # a .lsl file over 1 MB is refused
+
+
+def _slt_offset(unix):
+    """Seconds to add to UTC for Second Life Time: Pacific time with the US daylight saving rule."""
+    utc = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=unix)
+    march = datetime.date(utc.year, 3, 8)
+    start = datetime.datetime.combine(march + datetime.timedelta((6 - march.weekday()) % 7), datetime.time(10))
+    november = datetime.date(utc.year, 11, 1)
+    end = datetime.datetime.combine(november + datetime.timedelta((6 - november.weekday()) % 7), datetime.time(9))
+    return -7 * 3600 if start <= utc < end else -8 * 3600   # 2:00 PST and 2:00 PDT, in UTC
 
 
 def _clip(text, nbytes):
@@ -202,6 +212,8 @@ class Simulator(object):
         self.region_name = region_name
         self.sim_version = "lsltest " + __version__
         self.strict = strict                  # True: an unmodelled builtin raises instead of being recorded
+        self.max_statements = MAX_STATEMENTS  # lsltest guards per event handler, lowered by tests of the guards
+        self.max_handler_seconds = MAX_HANDLER_SECONDS
         self.avatars = {}                     # key -> Avatar
         self.objects = []                     # SimObject, objects[0] is the default one
         self.chat = []                        # Chat, everything said by scripts and avatars
@@ -335,11 +347,15 @@ class Simulator(object):
         self.run()
 
     def _next_due(self):
+        """The next timer or repeating sensor that would reach a handler in the script's current state."""
         due = None
         for script in self.all_scripts():
             if script.dead or not script.running:
                 continue
-            for when in (script.timer_due, script.sensor_repeat and script.sensor_repeat.due):
+            timer = script.timer_due if script.handles_event("timer") else None
+            sensor = script.sensor_repeat.due if script.sensor_repeat and (
+                script.handles_event("sensor") or script.handles_event("no_sensor")) else None
+            for when in (timer, sensor):
                 if when is not None and (due is None or when < due):
                     due = when
         return due
@@ -722,7 +738,7 @@ class Simulator(object):
         return _time.strftime("%Y-%m-%dT%H:%M:%S", self._utc()) + ".%06dZ" % int((self.time % 1) * 1e6)
 
     def ll_GetWallclock(self, script):
-        return f32(int((self.epoch + self.time + SLT_OFFSET) % 86400))   # seconds since midnight SLT
+        return f32(int((self.epoch + self.time + _slt_offset(self.epoch + self.time)) % 86400))
 
     def ll_GetGMTclock(self, script):
         return f32((self.epoch + self.time) % 86400)
@@ -1159,8 +1175,10 @@ class Simulator(object):
             script.post("linkset_data", [action, name, value])
 
     def _linkset_fits(self, obj, name, value, old):
-        """Whether writing value under name (replacing old) stays within LINKSET_DATA_SIZE."""
-        used = self._linkset_used(obj) - len(old.encode("utf-8"))
+        """Whether writing value under name (replacing old, "" when new) stays within LINKSET_DATA_SIZE."""
+        used = self._linkset_used(obj)
+        if old:
+            used -= len(name.encode("utf-8")) + len(old.encode("utf-8"))
         return used + len(name.encode("utf-8")) + len(value.encode("utf-8")) <= LINKSET_DATA_SIZE
 
     def _linkset_keys(self, obj, pattern=None):

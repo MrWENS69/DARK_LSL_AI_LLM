@@ -419,10 +419,13 @@ class SimulatorTest(LslTestCase):
             self.load("no_such_file.lsl")
 
     def test_deeply_nested_expression_is_a_syntax_error_not_a_crash(self):
-        parse("default { state_entry() { integer x = %s1%s; } }" % ("(" * 100, ")" * 100))
-        for depth in (200, 20000):
+        parse("default { state_entry() { integer x = %s1%s; } }" % ("(" * 118, ")" * 118))
+        parse("default { state_entry() { %s %s } }" % ("{" * 119, "}" * 119))
+        for depth in (119, 200, 20000):
             with self.assertRaises(LslSyntaxError):
                 parse("default { state_entry() { integer x = %s1%s; } }" % ("(" * depth, ")" * depth))
+        with self.assertRaises(LslSyntaxError):
+            parse("default { state_entry() { %s %s } }" % ("{" * 120, "}" * 120))
 
     def test_nested_vector_literals_parse_in_linear_time(self):
         import time
@@ -666,6 +669,86 @@ class GridBehaviourTest(LslTestCase):
             llOwnerSay((string)llLinksetDataCountFound("^(a+)+$") + (string)llLinksetDataCountFound(".*.*x"));
         } }""")
         self.assertEqual(owner_heard(sim), ["abc, abd", "00"])
+
+
+class GuardTest(LslTestCase):
+    """lsltest's own limits, each one reached on purpose."""
+
+    def kind_and_detail(self, sim):
+        self.assertEqual(len(sim.errors), 1, sim.errors)
+        err = sim.errors[0][1]
+        return err.kind, err.detail
+
+    def test_builtin_results_go_through_the_size_cap(self):
+        sim = run_script("list l = [1]; default { state_entry() { integer i; for (i = 0; i < 17; i++) l = llListInsertList(l, l, 0); } }")
+        self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+
+    def test_joins_are_sized_before_they_are_built(self):
+        sim = run_script("""list l = [1]; default { state_entry() {
+            integer i; for (i = 0; i < 16; i++) l += l;
+            llOwnerSay((string)llGetListLength(l));
+            string s = llDumpList2String(l, ", ");
+        } }""")
+        self.assertEqual(owner_heard(sim), ["65536"])
+        self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+
+    def test_record_lists_are_capped(self):
+        sim = run_script('default { state_entry() { while (TRUE) llSay(0, "x"); } }')
+        self.assertIn("records", self.kind_and_detail(sim)[1])
+        self.assertEqual(len(sim.chat), 100000)
+
+    def test_urls_are_capped_at_38(self):
+        sim = run_script("""integer denied; default {
+            state_entry() { integer i; for (i = 0; i < 39; i++) llRequestURL(); }
+            http_request(key id, string method, string body) { if (method == URL_REQUEST_DENIED) denied++; } }""")
+        self.assertEqual(sim.objects[0].scripts[0].globals["denied"], 1)
+        self.assertEqual(len(sim.http_in), 38)
+
+    def test_statement_budget_kills_a_looping_handler(self):
+        self.sim.max_statements = 50000
+        self.load("default { state_entry() { integer i; while (TRUE) i++; } }")
+        self.sim.start()
+        self.assertIn("statements", self.kind_and_detail(self.sim)[1])
+
+    def test_handler_deadline_kills_a_slow_handler(self):
+        self.sim.max_handler_seconds = 0.05
+        self.load("default { state_entry() { integer i; while (TRUE) i++; } }")
+        self.sim.start()
+        self.assertIn("seconds", self.kind_and_detail(self.sim)[1])
+
+    def test_locals_count_in_the_memory_check(self):
+        # 5000 iterations: the periodic check (every 4096 statements) sees about 4000 local keys, 400 KB
+        sim = run_script("default { state_entry() { list l; integer i; for (i = 0; i < 5000; i++) l += [llGenerateKey()]; } }")
+        self.assertEqual(self.kind_and_detail(sim)[0], "Stack-Heap Collision")
+
+    def test_timer_without_a_handler_in_the_current_state_costs_nothing(self):
+        sim = run_script("default { state_entry() { llSetTimerEvent(0.1); state two; } } state two { state_entry() { } }")
+        sim.tick(86400.0)
+        self.assertEqual(sim.errors, [])
+
+    def test_linkset_rewrite_of_an_existing_key_counts_the_old_value_once(self):
+        # values are capped at 65536 characters, so the 128 KiB store is approached with two keys;
+        # the rewrite fits by 20 bytes only when the old value AND its name are released first
+        sim = run_script("""default { state_entry() {
+            string v = "x"; integer i; for (i = 0; i < 16; i++) v += v;         // 65536 characters
+            string name = "a_twenty_char_key___";
+            llOwnerSay((string)llLinksetDataWrite(name, llGetSubString(v, 0, 59999)));
+            llOwnerSay((string)llLinksetDataWrite("b", v));
+            llOwnerSay((string)llLinksetDataWrite(name, llGetSubString(v, 0, 65499)));
+        } }""")
+        self.assertEqual(sim.errors, [])
+        self.assertEqual(owner_heard(sim), ["%d" % CONSTANTS["LINKSETDATA_OK"]] * 3)
+
+class MoreFactsTest(LslTestCase):
+    def test_list2json_turns_plain_words_into_literals_and_keeps_json_text(self):
+        self.assertEqual(run_expr('llList2Json(JSON_ARRAY, ["true", "null", "[1,2]", "x"])'), '[true,null,[1,2],"x"]')
+
+    def test_wallclock_follows_us_daylight_saving(self):
+        self.assertEqual(run_expr("llGetWallclock()"), "51200.000000")        # 2023-11-14, PST
+        sim = run_script("default { state_entry() { llSleep(1.0); } }")
+        sim.epoch = 1690000000                                                   # 2023-07-22 04:26:40 UTC, PDT
+        sim.time = 0.0
+        self.assertEqual(sim.ll_GetWallclock(sim.objects[0].scripts[0]), 77200.0)
 
 
 class CliTest(unittest.TestCase):
