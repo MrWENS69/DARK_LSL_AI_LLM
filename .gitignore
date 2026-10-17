@@ -30,3 +30,10 @@ Thumbs.db
 ##################
 *~
 /.vs
+# Python #
+##########
+__pycache__/
+*.egg-info/
+/build/
+/dist/
+/.venv/

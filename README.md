@@ -52,7 +52,10 @@ exit codes. Both get builtins that match the live grid.
   "Not all code paths return a value" errors at line 1.
 - **`lslcheck.py`**, a front end for scripts and assistants: GCC-style
   `file:line:col: error: [E10033] message` output, directory scan, `--json`,
-  `--strict`, meaningful exit codes, `-s` on by default.
+  `--strict`, meaningful exit codes, `-s` on by default. Installable with
+  `uvx` or `pipx` (`pyproject.toml`); downloads and caches the release
+  binary for the platform when none is installed, after checking its
+  SHA-256 against the release's `SHA256SUMS.txt`.
 - **`build_win64.cmd`**: builds on Windows with the free Visual Studio Build
   Tools and winflexbison, no IDE.
 - **GitHub Actions**: build and test on Linux and Windows for every push,
@@ -66,7 +69,18 @@ exit codes. Both get builtins that match the live grid.
 
 ## Quick start
 
-Humans:
+No compiler needed. With [uv](https://docs.astral.sh/uv/) (or pipx) installed:
+
+```sh
+uvx --from git+https://github.com/MrWENS69/DARK_LSL_AI_LLM lslcheck script.lsl
+```
+
+`lslcheck` finds `lslint` next to it, on `PATH`, or downloads the binary
+published for your platform (Windows x64, Linux x64, macOS Intel and Apple
+Silicon) from the latest release, verifies its SHA-256 and caches it. No
+Visual C++ runtime, no Homebrew, nothing to install by hand.
+
+From a clone:
 
 ```sh
 lslint -m script.lsl                  # Mono rules (default), plain output
@@ -78,7 +92,8 @@ python lslcheck.py --strict script.lsl   # warnings fail too (CI)
 
 AI assistants:
 
-1. Build or download `lslint`, keep it next to `lslcheck.py` (or set `LSLINT`).
+1. Run `lslcheck` as above, or build `lslint` and keep it next to
+   `lslcheck.py` (or set `LSLINT`).
 2. Claude Code: copy `skills/lsl-dev/` into `.claude/skills/` of the project
    (or `~/.claude/skills/` for every project). Other assistants: paste
    `skills/lsl-dev/SKILL.md` and `skills/lsl-dev/references/lsl-for-ai.md`

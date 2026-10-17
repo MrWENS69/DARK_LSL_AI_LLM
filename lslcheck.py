@@ -3,7 +3,9 @@
 
 Designed for scripted use (CI, editors, AI coding assistants): one line per
 finding in GCC style, a one-line summary, a meaningful exit code, and an
-optional JSON mode.
+optional JSON mode. When no lslint binary is available, the one published
+for this platform on the project's GitHub releases is downloaded once and
+cached.
 
 Usage:
     python lslcheck.py script.lsl
@@ -11,23 +13,34 @@ Usage:
     python lslcheck.py --json src/ > report.json
     python lslcheck.py --strict script.lsl     # warnings also fail
     python lslcheck.py -w -z script.lsl        # pass lslint flags through
+    uvx --from git+https://github.com/MrWENS69/DARK_LSL_AI_LLM lslcheck script.lsl
 
 Exit codes: 0 clean, 1 findings (errors, or warnings with --strict), 2 lslint
 not found or crashed.
 
 The lslint binary is looked up in this order: --lslint, the LSLINT environment
-variable, lslint(.exe) next to this script, then PATH.
+variable, lslint(.exe) next to this script, PATH, the download cache, and
+finally a download from the latest GitHub release (disable with
+--no-download or LSLCHECK_NO_DOWNLOAD=1).
 """
 
 import argparse
+import hashlib
+import io
 import json
 import os
+import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.environ.get("LSLCHECK_REPO", "MrWENS69/DARK_LSL_AI_LLM")
+BINARY = "lslint.exe" if os.name == "nt" else "lslint"
 
 MESSAGE_RE = re.compile(
     r"^\s*(?P<level>ERROR|WARN|INFO)::\s*"
@@ -52,19 +65,116 @@ def dest_name(long_flag):
     return long_flag.lstrip("-").replace("-", "_")
 
 
-def find_lslint(explicit):
+# --- locating or fetching the binary -------------------------------------
+
+def cache_dir():
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "lslcheck")
+
+
+def platform_asset():
+    """Suffix of the release asset for this machine, or None when unsupported."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Windows" and machine in ("amd64", "x86_64"):
+        return "win64"
+    if system == "Linux" and machine in ("x86_64", "amd64"):
+        return "linux64"
+    if system == "Darwin":
+        return "macos-arm64" if machine in ("arm64", "aarch64") else "macos-x64"
+    return None
+
+
+def cached_binary():
+    """Newest binary in the download cache, or None."""
+    root = cache_dir()
+    if not os.path.isdir(root):
+        return None
+    candidates = []
+    for tag in os.listdir(root):
+        path = os.path.join(root, tag, BINARY)
+        if os.path.isfile(path):
+            candidates.append((os.path.getmtime(path), path))
+    return max(candidates)[1] if candidates else None
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "lslcheck"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+def download_binary(log):
+    """Download the latest release binary for this platform into the cache."""
+    suffix = platform_asset()
+    if not suffix:
+        log("no prebuilt lslint for %s %s" % (platform.system(), platform.machine()))
+        return None
+    try:
+        release = json.loads(fetch("https://api.github.com/repos/%s/releases/latest" % REPO))
+    except Exception as exc:  # network, 404 when no release yet, bad JSON
+        log("cannot query releases of %s: %s" % (REPO, exc))
+        return None
+    tag = release.get("tag_name", "")
+    assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
+    wanted = [name for name in assets if name.endswith("_%s.zip" % suffix)]
+    if not wanted:
+        log("release %s has no asset for %s" % (tag, suffix))
+        return None
+    name = wanted[0]
+    log("downloading lslint %s (%s)" % (tag, name))
+    try:
+        blob = fetch(assets[name])
+        sums = fetch(assets["SHA256SUMS.txt"]).decode("utf-8") if "SHA256SUMS.txt" in assets else ""
+    except Exception as exc:
+        log("download failed: %s" % exc)
+        return None
+    if sums:
+        expected = dict(line.split()[::-1] for line in sums.splitlines() if line.strip())
+        actual = hashlib.sha256(blob).hexdigest()
+        if expected.get(name) != actual:
+            log("checksum mismatch for %s, refusing to use it" % name)
+            return None
+    target_dir = os.path.join(cache_dir(), tag)
+    os.makedirs(target_dir, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        members = [m for m in archive.namelist() if os.path.basename(m) == BINARY]
+        if not members:
+            log("%s does not contain %s" % (name, BINARY))
+            return None
+        target = os.path.join(target_dir, BINARY)
+        with archive.open(members[0]) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    log("installed %s" % target)
+    return target
+
+
+def find_lslint(explicit, allow_download, log):
     candidates = []
     if explicit:
         candidates.append(explicit)
     if os.environ.get("LSLINT"):
         candidates.append(os.environ["LSLINT"])
-    candidates.append(os.path.join(HERE, "lslint.exe"))
-    candidates.append(os.path.join(HERE, "lslint"))
+    candidates.append(os.path.join(HERE, BINARY))
     for cand in candidates:
         if os.path.isfile(cand):
             return cand
-    return shutil.which("lslint")
+    found = shutil.which("lslint")
+    if found:
+        return found
+    found = cached_binary()
+    if found:
+        return found
+    if allow_download:
+        return download_binary(log)
+    return None
 
+
+# --- running and parsing ---------------------------------------------------
 
 def collect(paths):
     files = []
@@ -152,16 +262,26 @@ def main(argv=None):
     ap.add_argument("--strict", action="store_true", help="treat warnings as failures")
     ap.add_argument("--json", action="store_true", help="emit a JSON report instead of text")
     ap.add_argument("-q", "--quiet", action="store_true", help="only print the summary line")
+    ap.add_argument("--no-side-effects", dest="side_effects", action="store_false",
+                    help="disable the && / || side-effect check (lslint -s), on by default")
+    ap.add_argument("--no-download", action="store_true",
+                    help="never download the binary from GitHub releases")
     for short, long_, help_ in PASSTHROUGH:
         ap.add_argument(short, long_, dest=dest_name(long_), action="store_true", help=help_)
     args = ap.parse_args(argv)
 
-    lslint = find_lslint(args.lslint)
+    def log(text):
+        sys.stderr.write("lslcheck: %s\n" % text)
+
+    allow_download = not args.no_download and not os.environ.get("LSLCHECK_NO_DOWNLOAD")
+    lslint = find_lslint(args.lslint, allow_download, log)
     if not lslint:
-        sys.stderr.write("lslcheck: lslint binary not found (use --lslint, LSLINT env var, or build it first)\n")
+        log("lslint binary not found (use --lslint, LSLINT env var, or build it first)")
         return 2
 
     flags = ["-#", "-l", "-m-" if args.lso else "-m"]
+    if args.side_effects:
+        flags.append("-s")
     for short, long_, _ in PASSTHROUGH:
         if getattr(args, dest_name(long_)):
             flags.append(short)
@@ -170,7 +290,7 @@ def main(argv=None):
 
     files = collect(args.paths)
     if not files:
-        sys.stderr.write("lslcheck: no .lsl files found\n")
+        log("no .lsl files found")
         return 2
 
     results, failures = [], []

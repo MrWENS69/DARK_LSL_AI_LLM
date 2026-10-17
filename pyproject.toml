@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lslcheck"
+version = "1.2.0"
+description = "Run lslint over Second Life LSL scripts: GCC-style output, JSON, exit codes, automatic download of the lslint binary"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Public Domain" }
+keywords = ["second-life", "lsl", "lint", "linter", "lslint"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/MrWENS69/DARK_LSL_AI_LLM"
+Issues = "https://github.com/MrWENS69/DARK_LSL_AI_LLM/issues"
+
+[project.scripts]
+lslcheck = "lslcheck:main"
+
+[tool.setuptools]
+py-modules = ["lslcheck"]

@@ -29,6 +29,30 @@ jobs:
           name: dist-linux
           path: dist/*.zip
 
+  macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            suffix: macos-arm64
+          - runner: macos-13
+            suffix: macos-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install flex bison
+      - run: |
+          export PATH="/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin:$PATH"
+          make DEBUG= BUILD_VERSION_NUMBER=${GITHUB_REF_NAME#v}
+      - run: sh test.sh
+      - run: |
+          mkdir -p dist
+          zip -j dist/lslint_${GITHUB_REF_NAME}_${{ matrix.suffix }}.zip lslint builtins_version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.suffix }}
+          path: dist/*.zip
+
   windows:
     runs-on: windows-latest
     steps:
@@ -54,14 +78,21 @@ jobs:
           path: dist/*.zip
 
   publish:
-    needs: [linux, windows]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums (verified by lslcheck.py before it installs a binary)
+        run: |
+          cd dist
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
           generate_release_notes: true
