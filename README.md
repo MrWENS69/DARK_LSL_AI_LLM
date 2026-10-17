@@ -69,7 +69,17 @@ exit codes. Both get builtins that match the live grid.
   by a non-literal. Pure reads and computations (`llGetOwner`, `llList2*`,
   `llAbs`...) are not reported, and neither is a forced delay alone
   (`llModPow`, `llXorBase64Strings`, `llGetParcelPrimOwners`): the script
-  stalls, nothing changes.
+  stalls, nothing changes. A second rule under the same flag (warning 20025)
+  reports a variable written in one function argument, list element or
+  vector component and used in another: Linden Lab does not document the
+  order those are evaluated in.
+- **`lslcheck --doc NAME`**: the reference of any function, event or
+  constant without leaving the terminal: signature, what it does, each
+  parameter, forced delay and energy, the wiki page. Generated from Linden
+  Lab's `lsl_definitions.yaml` by `update_builtins.py` into
+  `lsltest/data/lsl_doc.json`, so it is as current as the builtins. A prefix
+  lists the matching names (`lslcheck --doc CHANGED_`), `--json` gives the
+  entries as data.
 - **Three bug fixes** in the analyzer: an uninitialized switch-depth counter
   made error 10033 (break outside switch) appear or vanish depending on the
   environment, a dangling symbol pointer in `-F` mode produced random "Not all
@@ -145,6 +155,7 @@ AI assistants:
 
 ```
 lslcheck [options] PATH...        files, or directories scanned for *.lsl
+lslcheck --doc NAME...            reference of functions, events, constants (exact name or prefix)
   --strict          warnings fail too
   --json            JSON report on stdout instead of text
   -q, --quiet       only the summary line
@@ -209,10 +220,13 @@ python update_builtins.py            # from the main branch of lsl-definitions
 python update_builtins.py --ref <tag-or-sha>
 ```
 
-The script rewrites `builtins.txt`, `builtins_txt.cc` and
-`builtins_version.txt`, and prints the added and removed names plus a count
-of changed signatures. Rebuild and run the tests afterwards. The daily GitHub
-Actions job does the same and opens a pull request.
+The script rewrites `builtins.txt`, `builtins_txt.cc`,
+`builtins_version.txt`, the copy bundled in `lsltest/data/` and
+`lsltest/data/lsl_doc.json` (the `--doc` reference, from
+`lsl_definitions.yaml` of the same commit), and prints the added and removed
+names plus a count of changed signatures. Rebuild and run the tests
+afterwards. The daily GitHub Actions job does the same and opens a pull
+request.
 
 ## Options of lslint
 

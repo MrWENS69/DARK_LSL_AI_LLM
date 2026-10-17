@@ -94,6 +94,52 @@ class FindBinaryTest(unittest.TestCase):
                 os.environ["LSLINT"] = env
 
 
+class DocTest(unittest.TestCase):
+    """--doc needs no binary: it reads lsltest/data/lsl_doc.json."""
+
+    def run_doc(self, *argv):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = lslcheck.main(["--doc"] + list(argv))
+        return code, out.getvalue()
+
+    def test_exact_function(self):
+        code, out = self.run_doc("llListen")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("integer llListen(integer channel, string name, key id, string msg)"), out)
+        self.assertIn("channel:", out)
+        self.assertIn("wiki.secondlife.com/wiki/LlListen", out)
+
+    def test_event_constant_and_prefix(self):
+        code, out = self.run_doc("listen", "CHANGED_INVENTORY", "CHANGED_")
+        self.assertEqual(code, 0, out)
+        self.assertIn("event listen(integer channel", out)
+        self.assertIn("integer CHANGED_INVENTORY = 0x1", out)
+        self.assertIn("CHANGED_: ", out)
+        self.assertIn("CHANGED_REGION_START", out)
+
+    def test_unknown_name_fails(self):
+        code, out = self.run_doc("llNoSuchThing")
+        self.assertEqual(code, 1)
+        self.assertIn("no function, event or constant", out)
+
+    def test_json(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = lslcheck.main(["--json", "--doc", "llSleep"])
+        report = json.loads(out.getvalue())
+        self.assertEqual(code, 0)
+        hit = report["results"][0]["matches"][0]
+        self.assertEqual(hit["kind"], "function")
+        self.assertEqual(hit["args"][0][:2], ["sec", "float"])
+        self.assertIn("sleep", hit["tooltip"].lower())
+
+    def test_no_paths_and_no_doc_is_a_usage_error(self):
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(io.StringIO()):
+                lslcheck.main([])
+
+
 @unittest.skipUnless(os.path.isfile(BINARY), "lslint binary not built")
 class IntegrationTest(unittest.TestCase):
     def run_main(self, *argv):
@@ -111,6 +157,10 @@ class IntegrationTest(unittest.TestCase):
         code, out = self.run_main("--strict", os.path.join(HERE, "scripts", "side_effects", "logical_ops.lsl"))
         # the $[E20024] markers in the corpus suppress the expected warnings (-a is on by default)
         self.assertEqual(code, 0, out)
+
+    def test_sibling_writes_report_w20025(self):
+        code, out = self.run_main("--strict", "-a-" if False else "--strict", os.path.join(HERE, "scripts", "side_effects", "siblings.lsl"))
+        self.assertEqual(code, 0, out)        # marked lines only
 
     def test_json_report_shape(self):
         code, out = self.run_main("--json", os.path.join(HERE, "scripts", "test1.lsl"))

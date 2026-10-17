@@ -33,4 +33,4 @@ packages = ["lsltest"]
 version = { attr = "lsltest._version.__version__" }
 
 [tool.setuptools.package-data]
-lsltest = ["data/builtins.txt"]
+lsltest = ["data/builtins.txt", "data/lsl_doc.json"]

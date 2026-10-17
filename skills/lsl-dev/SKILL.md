@@ -27,6 +27,8 @@ a warning.
    `lslint` binary for the platform by itself when none is installed. The
    output is one line per diagnostic, `file:line:col: error: [E10033]
    message`, then a summary line.
+   Never guess a signature, a constant or a delay: `lslcheck --doc llName`
+   (or a prefix, `lslcheck --doc PRIM_`) prints the reference offline.
 4. **Fix every error. Read every warning** and either fix it or explain in one
    sentence why it is intended. `--strict` makes warnings fail on purpose.
 5. **Test it**: write `tests/test_<script>.py` with `lsltest` (see

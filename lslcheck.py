@@ -266,13 +266,111 @@ def format_text(result):
     return out
 
 
+# --- --doc: the offline reference ------------------------------------------------------
+
+def doc_file():
+    """lsl_doc.json: next to this script in a checkout, inside the lsltest package when installed."""
+    local = os.path.join(HERE, "lsltest", "data", "lsl_doc.json")
+    if os.path.isfile(local):
+        return local
+    try:
+        import lsltest
+    except ImportError:
+        return None
+    installed = os.path.join(os.path.dirname(os.path.abspath(lsltest.__file__)), "data", "lsl_doc.json")
+    return installed if os.path.isfile(installed) else None
+
+
+def wiki_url(kind, name):
+    page = name[0].upper() + name[1:] if kind != "constant" else name
+    return "https://wiki.secondlife.com/wiki/" + page
+
+
+def doc_lookup(doc, query):
+    """Entries for one query: the exact name (any case), else every name starting with it."""
+    kinds = (("function", doc["functions"]), ("event", doc["events"]), ("constant", doc["constants"]))
+    for kind, table in kinds:
+        if query in table:
+            return [(kind, query, table[query])]
+    lowered = query.lower()
+    exact = [(kind, name, table[name]) for kind, table in kinds for name in table if name.lower() == lowered]
+    if exact:
+        return exact
+    return sorted((kind, name, table[name]) for kind, table in kinds for name in table if name.lower().startswith(lowered))
+
+
+def doc_signature(kind, name, entry):
+    if kind == "constant":
+        return "%s %s = %s" % (entry["type"], name, entry["value"])
+    params = ", ".join("%s %s" % (arg[1], arg[0]) for arg in entry["args"])
+    if kind == "event":
+        return "event %s(%s)" % (name, params)
+    return "%s %s(%s)" % (entry["return"], name, params)
+
+
+def doc_card(kind, name, entry):
+    lines = [doc_signature(kind, name, entry)]
+    if entry.get("tooltip"):
+        lines.append("    " + entry["tooltip"])
+    for arg in entry.get("args", []):
+        if arg[2]:
+            lines.append("    %s: %s" % (arg[0], arg[2]))
+    if kind == "function":
+        notes = ["sleep %g s" % entry["sleep"], "energy %g" % entry["energy"]]
+        for flag in ("deprecated", "pure", "god-mode", "experience"):
+            if entry.get(flag):
+                notes.append(flag)
+        if entry.get("requires-permission"):
+            notes.append("needs %s" % ", ".join(entry["requires-permission"]))
+        lines.append("    " + ", ".join(notes))
+    elif kind == "constant" and entry.get("deprecated"):
+        lines.append("    deprecated" + (", use %s" % entry["use"] if entry.get("use") else ""))
+    lines.append("    " + wiki_url(kind, name))
+    return "\n".join(lines)
+
+
+def show_doc(queries, as_json, log):
+    path = doc_file()
+    if not path:
+        log("lsl_doc.json not found (run update_builtins.py, or install the package)")
+        return 2
+    with open(path, "r", encoding="utf-8") as handle:
+        doc = json.load(handle)
+    report = []
+    missing = 0
+    for query in queries:
+        hits = doc_lookup(doc, query)
+        if not hits:
+            missing += 1
+        report.append({"query": query, "matches": [dict(entry, kind=kind, name=name, signature=doc_signature(kind, name, entry),
+                                                        url=wiki_url(kind, name)) for kind, name, entry in hits]})
+    if as_json:
+        print(json.dumps({"source": doc.get("source", ""), "results": report}, indent=2, ensure_ascii=False))
+        return 1 if missing else 0
+    for item in report:
+        hits = item["matches"]
+        if not hits:
+            print("%s: no function, event or constant with that name or prefix" % item["query"])
+        elif len(hits) == 1 or hits[0]["name"] == item["query"]:
+            print(doc_card(hits[0]["kind"], hits[0]["name"], hits[0]))
+        else:
+            print("%s: %d names" % (item["query"], len(hits)))
+            for hit in hits[:60]:
+                print("  %s" % hit["signature"])
+            if len(hits) > 60:
+                print("  ... %d more, narrow the prefix" % (len(hits) - 60))
+    return 1 if missing else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="lslcheck",
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("paths", nargs="+", help="LSL files or directories")
+    ap.add_argument("paths", nargs="*", help="LSL files or directories")
+    ap.add_argument("--doc", nargs="+", metavar="NAME",
+                    help="print the reference of LSL functions, events or constants (exact name or prefix) and exit")
     ap.add_argument("--lslint", help="path to the lslint binary")
     ap.add_argument("-b", "--builtins", help="alternate builtins.txt")
     ap.add_argument("--lso", action="store_true", help="use LSO rules instead of Mono")
@@ -294,6 +392,11 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="backslashreplace")
+
+    if args.doc:
+        return show_doc(args.doc, args.json, log)
+    if not args.paths:
+        ap.error("give LSL files or directories to check, or --doc NAME")
 
     allow_download = not args.no_download and not os.environ.get("LSLCHECK_NO_DOWNLOAD")
     lslint = find_lslint(args.lslint, allow_download, log)
