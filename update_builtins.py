@@ -20,6 +20,7 @@ import json
 import pathlib
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 REPO = "secondlife/lsl-definitions"
@@ -28,11 +29,28 @@ BUILTINS_TXT = ROOT / "builtins.txt"
 BUILTINS_CC = ROOT / "builtins_txt.cc"
 VERSION_TXT = ROOT / "builtins_version.txt"
 
+# Every line ends up inside a C string literal in builtins_txt.cc and in a
+# 1024-byte buffer in builtins.cc. Allowed: printable ASCII plus the JSON_*
+# noncharacter constants (U+FDD0..U+FDEF) and the control character inside
+# NAK, a sane length, no backslash other
+# than the \n of EOF and NAK, no quote outside a string constant's value.
+SAFE_LINE = re.compile(r"[\x15\x20-\x7e\ufdd0-\ufdef]{1,1000}")  # \x15: the NAK constant
+
 
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "lslint-update-builtins"})
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+        return resp.read(5000000)
+
+
+def check_line(line):
+    if not SAFE_LINE.fullmatch(line):
+        raise ValueError("unsafe builtins line: %r" % line)
+    if re.search(r"\\(?!n)", line) or "??" in line or "*/" in line:
+        raise ValueError("unexpected backslash or trigraph: %r" % line)
+    body = re.sub(r'^const string \w+ = "(.*)"$', r"\1", line)
+    if '"' in body:
+        raise ValueError("unexpected quote: %r" % line)
 
 
 def parse(text):
@@ -42,6 +60,7 @@ def parse(text):
         line = line.rstrip()
         if not line or line.startswith("//"):
             continue
+        check_line(line)
         m = re.match(r"const (\w+) (\w+) = (.*)$", line)
         if m:
             constants[m.group(2)] = (m.group(1), m.group(3))
@@ -67,9 +86,9 @@ def render_cc(text):
         "const char *builtins_txt[] = {",
     ]
     for line in text.splitlines():
-        if line.startswith("//"):
+        if line.startswith("//") or not line.strip():
             continue
-        out.append('"%s",' % line.replace('"', '\\"'))
+        out.append('"%s",' % line.replace("\\", "\\\\").replace('"', '\\"'))
     out.append("(char*)0 };")
     return "\n".join(out) + "\n"
 
@@ -98,10 +117,13 @@ def main():
         source = pathlib.Path(args.from_file)
         text = source.read_text(encoding="utf-8")
         stamp = "local file %s" % source.name
-        version_body = "Source: %s\n" % source
+        version_body = "Source: local file %s\n" % source.name
     else:
-        commit = json.loads(fetch("https://api.github.com/repos/%s/commits/%s" % (REPO, args.ref)))
+        ref = urllib.parse.quote(args.ref, safe="/")
+        commit = json.loads(fetch("https://api.github.com/repos/%s/commits/%s" % (REPO, ref)))
         sha = commit["sha"]
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            sys.exit("unexpected commit sha from the GitHub API: %r" % sha)
         date = commit["commit"]["committer"]["date"][:10]
         text = fetch("https://raw.githubusercontent.com/%s/%s/generated/builtins.txt" % (REPO, sha)).decode("utf-8")
         stamp = "%s commit %s (%s)" % (REPO, sha[:12], date)

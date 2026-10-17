@@ -1,8 +1,12 @@
 # lslint, AI-assisted edition
 
-`lslint` checks the syntactic and semantic validity of Second Life LSL scripts
-(Linden Scripting Language). It runs offline, in a fraction of a second, and
-reports every problem with its line, column and an error code.
+One project, three names: the repository is `DARK_LSL_AI_LLM`, the checker it
+builds is `lslint`, and the command most people will type is `lslcheck`.
+
+`lslint` is a *linter* for Second Life LSL scripts (Linden Scripting
+Language): it reads a script without running it and lists every mistake with
+its line, column and a code. It runs offline, in a fraction of a second, on
+Windows, macOS and Linux.
 
 This repository is a maintained fork of [Makopo/lslint](https://github.com/Makopo/lslint)
 (itself a fork of pclewis/lslint). It stays compatible with upstream and adds
@@ -36,40 +40,65 @@ member touches it" should get a script that compiles and behaves the first
 time. An experienced scripter gets the same tool in CI, with a JSON report and
 exit codes. Both get builtins that match the live grid.
 
+## Words used here
+
+- **Diagnostic**: one error or warning. An **error** (`E1xxxx`) means the
+  script will not compile in Second Life. A **warning** (`E2xxxx`) means it
+  compiles but very likely does not do what you meant. Codes are printed with
+  `-#`, which `lslcheck` always passes.
+- **Builtins**: the functions, events and constants Second Life provides
+  (`llSay`, `touch_start`, `TRUE`). They live in `builtins.txt`.
+- **Mono / LSO**: the current and the legacy script engines of Second Life.
+  Mono gives a script 64 KiB, LSO 16 KiB. `-m` (default) checks Mono rules,
+  `-m-` LSO rules.
+- **Skill**: a ready-made instruction set for an AI assistant (Claude Code
+  reads `skills/*/SKILL.md`; any assistant can read it as a checklist).
+- **In-world**: inside Second Life, on the live servers (the "grid").
+
 ## What this fork adds
 
 - **Current builtins.** `builtins.txt` is generated from Linden Lab's official
   [lsl-definitions](https://github.com/secondlife/lsl-definitions) repository.
   `python update_builtins.py` refreshes it, `builtins_version.txt` records the
-  source commit. The previous source (kwdb) is no longer maintained.
-- **New check `-s`** (warning 20024): side effects in `&&` / `||` operands.
-  LSL evaluates both operands unconditionally, right operand first. A function
-  call, an assignment, an increment or a division inside a logical condition
-  is reported, so nobody relies on a short-circuit that does not exist.
-- **Two bug fixes** in the analyzer: an uninitialized switch-depth counter
+  exact source commit. The previous source (kwdb) is retired.
+- **New check `-s`** (warning 20024, printed `[E20024]`): LSL evaluates both
+  operands of `&&` and `||` unconditionally, right operand first. The check
+  reports an operand that acts or can fail: a call to one of your own
+  functions, a call to a builtin that acts (`llSay`, `llListen`,
+  `llGetNotecardLine`...), an assignment, `++`/`--`, a division or a modulo
+  by a non-literal. Pure reads and computations (`llGetOwner`, `llList2*`,
+  `llAbs`...) are not reported.
+- **Three bug fixes** in the analyzer: an uninitialized switch-depth counter
   made error 10033 (break outside switch) appear or vanish depending on the
-  environment, and a dangling symbol pointer in `-F` mode produced random
-  "Not all code paths return a value" errors at line 1.
-- **`lslcheck.py`**, a front end for scripts and assistants: GCC-style
-  `file:line:col: error: [E10033] message` output, directory scan, `--json`,
-  `--strict`, meaningful exit codes, `-s` on by default. Installable with
-  `uvx` or `pipx` (`pyproject.toml`); downloads and caches the release
-  binary for the platform when none is installed, after checking its
-  SHA-256 against the release's `SHA256SUMS.txt`.
+  environment, a dangling symbol pointer in `-F` mode produced random "Not all
+  code paths return a value" errors at line 1, and `isprint()` was called
+  with parser token codes (undefined behaviour). On Windows, aborts and
+  assertions now go to stderr instead of a modal dialog.
+- **`lslcheck`**, a front end for automation (CI, editors) and assistants:
+  GCC-style `file:line:col: error: [E10033] message` lines, directory scan,
+  `--json`, `--strict`, exit codes, `-s` on by default. Installable with `uvx`
+  or `pipx`; downloads and caches the release binary for the platform when
+  none is installed, after checking its SHA-256 against the release's
+  `SHA256SUMS.txt`.
 - **`build_win64.cmd`**: builds on Windows with the free Visual Studio Build
   Tools and winflexbison, no IDE.
-- **GitHub Actions**: build and test on Linux and Windows for every push,
-  daily builtins refresh, release binaries on tags. The upstream CircleCI
-  configuration is removed.
-- **Documentation for assistants**: `skills/lsl-dev/` is a ready-to-install
+- **GitHub Actions**: build and test on Linux, macOS and Windows for every
+  push; daily builtins refresh that opens a pull request when Linden Lab
+  changed something; release binaries for the four platforms on a tag. The
+  upstream CircleCI configuration is removed.
+- **Knowledge for assistants**: `skills/lsl-dev/` is a ready-to-install
   skill for Claude Code and a readable checklist for any other assistant. Its
-  `references/` folder holds the verified LSL facts (`lsl-for-ai.md`) and the
-  error code reference (`error-codes.md`). `AGENTS.md` explains the repository
-  to an agent working on it.
+  `references/` folder holds the verified LSL facts (`lsl-for-ai.md`), the
+  patterns that survive the simulator (`patterns.md`), the testing ladder
+  from linter to in-world plan (`testing.md`) and the diagnostic code table
+  (`error-codes.md`). `templates/` holds complete scripts, lint-clean in CI,
+  to start from. `AGENTS.md` explains the repository to an agent working on
+  it.
 
 ## Quick start
 
-No compiler needed. With [uv](https://docs.astral.sh/uv/) (or pipx) installed:
+No compiler needed. [uv](https://docs.astral.sh/uv/) is a Python tool runner
+(one-line install on every platform, see its site); `pipx` works the same way.
 
 ```sh
 uvx --from git+https://github.com/MrWENS69/DARK_LSL_AI_LLM lslcheck script.lsl
@@ -84,7 +113,7 @@ From a clone:
 
 ```sh
 lslint -m script.lsl                  # Mono rules (default), plain output
-lslint -m -# -s script.lsl            # with error codes and the side-effect check
+lslint -m -# -s script.lsl            # with codes and the && / || check
 python lslcheck.py src/               # every .lsl under src/, GCC-style lines
 python lslcheck.py --json src/ > report.json
 python lslcheck.py --strict script.lsl   # warnings fail too (CI)
@@ -98,8 +127,36 @@ AI assistants:
    (or `~/.claude/skills/` for every project). Other assistants: paste
    `skills/lsl-dev/SKILL.md` and `skills/lsl-dev/references/lsl-for-ai.md`
    into the context.
-3. Every script goes through `python lslcheck.py --strict script.lsl` before
-   it is shown to a human. Zero errors, every warning read.
+3. Every script goes through `lslcheck --strict script.lsl` before it is
+   shown to a human. Zero errors, every warning read.
+
+## lslcheck reference
+
+```
+lslcheck [options] PATH...        files, or directories scanned for *.lsl
+  --strict          warnings fail too
+  --json            JSON report on stdout instead of text
+  -q, --quiet       only the summary line
+  --lso             LSO rules instead of Mono
+  -b FILE           alternate builtins.txt
+  --no-side-effects do not pass -s to lslint
+  --lslint PATH     the lslint binary (also: LSLINT environment variable)
+  --no-download     never fetch the binary (also: LSLCHECK_NO_DOWNLOAD=1)
+  -w -z -i -u -G -F forwarded to lslint (switch, lazy lists, ignore
+                    preprocessor, unused event parameters, god mode,
+                    builtin override)
+```
+
+Exit codes: 0 clean, 1 at least one error (or a warning with `--strict`),
+2 tool failure (binary missing, a path that does not exist, lslint crashed
+or timed out, no `.lsl` file found).
+
+JSON report: `{"lslint": path, "flags": [...], "files": [{"path", "errors",
+"warnings", "messages": [{"level": "ERROR"|"WARN"|"INFO", "line", "col",
+"end_line", "end_col", "code", "message"}]}], "failures": [{"path",
+"error"}], "total": {"files", "errors", "warnings"}, "ok": bool}`. Positions
+and `code` are `null` when lslint printed none. `ok` is true exactly when the
+exit code is 0.
 
 ## Building
 
@@ -117,18 +174,22 @@ with the "Desktop development with C++" workload, unpack
 `C:\flexandbison` (or set `WINFLEXBISON`), then
 
 ```bat
-build_win64.cmd 1.2.0          :: lslint.exe
-build_win64.cmd 1.2.0 debug    :: debuggable build
-sh test.sh                     :: from Git Bash
+rem release build, lslint.exe in the repository root
+build_win64.cmd 1.2.0
+rem debuggable build (debug CRT, symbols)
+build_win64.cmd 1.2.0 debug
 ```
+
+and run the tests from Git Bash with `sh test.sh`.
 
 ## Tests
 
-`sh test.sh` runs every script under `scripts/`. A test script declares the
-diagnostics it expects with markers in comments, `$[E20024]` for instance, and
-`-A` fails the run on any missing or unexpected diagnostic. Each option has its
-own folder (`scripts/switch/`, `scripts/side_effects/`, ...) and its own line
-in `test.sh`.
+`sh test.sh` runs every script under `scripts/` (the corpus). A corpus
+script declares the diagnostics it expects with markers in comments,
+`$[E20024]` for instance, and `-A` fails the run on any missing or unexpected
+diagnostic. Each option has its own folder (`scripts/switch/`,
+`scripts/side_effects/`, ...) and its own line in `test.sh`.
+`python -m unittest test_lslcheck` covers the front end.
 
 ## Updating the builtins
 
@@ -138,10 +199,11 @@ python update_builtins.py --ref <tag-or-sha>
 ```
 
 The script rewrites `builtins.txt`, `builtins_txt.cc` and
-`builtins_version.txt`, and prints what was added, removed or changed. Rebuild
-and run the tests afterwards. The weekly GitHub Actions job does the same.
+`builtins_version.txt`, and prints the added and removed names plus a count
+of changed signatures. Rebuild and run the tests afterwards. The daily GitHub
+Actions job does the same and opens a pull request.
 
-## Options
+## Options of lslint
 
 ```
 -m          Use Mono rules (default on, -m- for LSO)
@@ -151,17 +213,19 @@ and run the tests afterwards. The weekly GitHub Actions job does the same.
 -p          Add the file path to the result
 -v          Be verbose
 -S          Don't sort log messages
--#          Show error codes
--A          Check error assertions (tests)
+-#          Show diagnostic codes
+-A          Check the $[E...] assertion markers (tests)
 -a          Don't report marked warnings/errors (default on)
 -i          Ignore preprocessor directives
 -u          Warn about unused event parameters
--s          Warn about side effects in && / || operands
+-s          Warn about calls, assignments, ++/-- and divisions in && / || operands
 -w          Enable switch statements
 -z          Enable lazy list syntax
 -G          Enable god mode
 -F          Allow a user function to override a builtin
 -V          Long version info
+--version   Short version info
+--help      This list
 ```
 
 Flags accept a trailing `-` to disable them (`-m-`).
@@ -172,18 +236,23 @@ Flags accept a trailing `-` to disable them (`-m-`).
   tracks. Fixes that make sense for everybody are offered back as pull
   requests.
 - [mikelittman/lslint](https://github.com/mikelittman/lslint): an active fork
-  that moved the builtins to lsl-definitions and the CI to GitHub Actions
-  first. Taken from it: the `fabs()` fix in the float-to-string conversion
-  (`values.cc`), the macOS CI job, and the decision to drop CircleCI.
+  that moved the builtins to lsl-definitions (as a pinned submodule) and the
+  CI to GitHub Actions first, with daily builtins updates. Taken from it: the
+  `fabs()` fix in the float-to-string conversion (`values.cc`), the macOS CI
+  job, the daily cadence, and the decision to drop CircleCI.
 - [secondlife/lsl-definitions](https://github.com/secondlife/lsl-definitions):
   Linden Lab's canonical YAML description of LSL. Its `generated/builtins.txt`
-  is what `update_builtins.py` fetches. Everything the linter knows about
-  functions, events and constants comes from there.
+  is what `update_builtins.py` fetches, pinned to an exact commit in
+  `builtins_version.txt`. Everything the linter knows about functions, events
+  and constants comes from there.
 - [Second Life wiki, LSL Portal](https://wiki.secondlife.com/wiki/LSL_Portal):
   the source of every fact in `skills/lsl-dev/references/lsl-for-ai.md`. Each
-  entry links to the page it was read from.
-- [Sei-Lisa/kwdb](https://github.com/Sei-Lisa/kwdb): the previous keyword
-  database, now retired by its author in favour of lsl-definitions.
+  entry names the page it was read from.
+- [Sei-Lisa/kwdb](https://github.com/Sei-Lisa/kwdb): the keyword database
+  that fed `builtins.txt` for years, and the syntax-highlighting files of
+  several editors. Its author retired it in September 2026 in favour of
+  lsl-definitions, which now generates those files too. Still used by
+  LSL-PyOptimizer.
 - [Sei-Lisa/LSL-PyOptimizer](https://github.com/Sei-Lisa/LSL-PyOptimizer):
   a complementary tool (optimizer and another parser) that uses the same
   `builtins.txt` format.
@@ -191,7 +260,7 @@ Flags accept a trailing `-` to disable them (`-m-`).
 ## Contributing
 
 Fixes and checks that help everybody are welcome as pull requests to `master`.
-Keep the upstream style (C++98 compatible, three-space indent), add a test
+Keep the upstream style (C++98 compatible, three-space indent), add a corpus
 script with assertion markers for every new diagnostic, never edit
 `builtins.txt` by hand. See `AGENTS.md` for the full checklist.
 

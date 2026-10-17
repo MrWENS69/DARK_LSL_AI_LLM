@@ -125,19 +125,27 @@ def download_binary(log):
         log("release %s has no asset for %s" % (tag, suffix))
         return None
     name = wanted[0]
+    if "SHA256SUMS.txt" not in assets:
+        log("release %s has no SHA256SUMS.txt, refusing to install an unverified binary" % tag)
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", tag) or ".." in tag:
+        log("release tag %r is not a safe directory name" % tag)
+        return None
     log("downloading lslint %s (%s)" % (tag, name))
     try:
         blob = fetch(assets[name])
-        sums = fetch(assets["SHA256SUMS.txt"]).decode("utf-8") if "SHA256SUMS.txt" in assets else ""
+        sums = fetch(assets["SHA256SUMS.txt"]).decode("utf-8")
     except Exception as exc:
         log("download failed: %s" % exc)
         return None
-    if sums:
-        expected = dict(line.split()[::-1] for line in sums.splitlines() if line.strip())
-        actual = hashlib.sha256(blob).hexdigest()
-        if expected.get(name) != actual:
-            log("checksum mismatch for %s, refusing to use it" % name)
-            return None
+    expected = {}
+    for entry in sums.splitlines():
+        parts = entry.split()
+        if len(parts) == 2:
+            expected[parts[1].lstrip("*")] = parts[0].lower()
+    if expected.get(name) != hashlib.sha256(blob).hexdigest():
+        log("checksum mismatch for %s, refusing to use it" % name)
+        return None
     target_dir = os.path.join(cache_dir(), tag)
     os.makedirs(target_dir, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(blob)) as archive:
@@ -164,7 +172,9 @@ def find_lslint(explicit, allow_download, log):
         if os.path.isfile(cand):
             return cand
     found = shutil.which("lslint")
-    if found:
+    # On Windows, which() may also look in the current directory: a checkout
+    # that happens to contain lslint.exe must not be executed by accident.
+    if found and os.path.dirname(os.path.abspath(found)) != os.getcwd():
         return found
     found = cached_binary()
     if found:
@@ -177,7 +187,8 @@ def find_lslint(explicit, allow_download, log):
 # --- running and parsing ---------------------------------------------------
 
 def collect(paths):
-    files = []
+    """Return (files, missing): .lsl files under the given paths, and paths that do not exist."""
+    files, missing = [], []
     for path in paths:
         if os.path.isdir(path):
             for root, _dirs, names in os.walk(path):
@@ -187,8 +198,8 @@ def collect(paths):
         elif os.path.isfile(path):
             files.append(path)
         else:
-            sys.stderr.write("lslcheck: no such file or directory: %s\n" % path)
-    return files
+            missing.append(path)
+    return files, missing
 
 
 def parse_output(text):
@@ -217,30 +228,33 @@ def parse_output(text):
 
 
 def run_one(lslint, flags, path):
-    cmd = [lslint] + flags + [path]
+    # A path starting with "-" would be read by lslint as an option.
+    cmd = [lslint] + flags + [path if os.path.isabs(path) else os.path.join(".", path)]
     try:
         proc = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", timeout=60,
         )
     except OSError as exc:
         return None, "cannot run %s: %s" % (lslint, exc)
+    except subprocess.TimeoutExpired:
+        return None, "lslint timed out after 60 s"
     messages, errors, warnings = parse_output(proc.stdout)
-    crashed = proc.returncode not in (0, 1) and not messages and errors == 0 and warnings == 0
-    if crashed:
+    # lslint's exit code is its error count, so only a missing TOTAL line (or
+    # a signal) tells a crash from a script full of errors.
+    saw_total = any(TOTAL_RE.match(line.rstrip()) for line in proc.stdout.splitlines())
+    if not saw_total and (proc.returncode < 0 or proc.returncode > 1 or not messages):
         return None, proc.stdout.strip() or ("lslint exited with code %d" % proc.returncode)
     return {"path": path, "errors": errors, "warnings": warnings, "messages": messages}, None
+
+
+LEVELS = {"ERROR": "error", "WARN": "warning", "INFO": "note"}
 
 
 def format_text(result):
     out = []
     for m in result["messages"]:
-        if m["level"] == "ERROR":
-            level = "error"
-        elif m["level"] == "WARN":
-            level = "warning"
-        else:
-            level = "note"
+        level = LEVELS.get(m["level"], "note")
         where = result["path"]
         if m["line"] is not None:
             where += ":%d:%d" % (m["line"], m["col"])
@@ -288,12 +302,15 @@ def main(argv=None):
     if args.builtins:
         flags += ["-b", args.builtins]
 
-    files = collect(args.paths)
+    files, missing = collect(args.paths)
+    for path in missing:
+        log("no such file or directory: %s" % path)
     if not files:
         log("no .lsl files found")
         return 2
 
-    results, failures = [], []
+    results = []
+    failures = [{"path": path, "error": "no such file or directory"} for path in missing]
     for path in files:
         result, failure = run_one(lslint, flags, path)
         if failure:

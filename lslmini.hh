@@ -5,10 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h> // isprint()
-
-// isprint() is undefined (and asserts in the MSVC debug CRT) outside 0..255;
-// operator codes from the parser are bison token numbers, far above that.
-inline bool is_printable_operator(int op) { return op > 0 && op < 128 && isprint(op); }
 #include <stdint.h>
 #include <cstdarg>
 #include <set>
@@ -33,6 +29,10 @@ void print_walk(char *str);
 void do_walk(class LLASTNode *node);
 
 #include "lslmini.tab.h"
+
+// isprint() is undefined (and asserts in the MSVC debug CRT) outside 0..255;
+// operator codes from the parser are bison token numbers, far above that.
+inline bool is_printable_operator(int op) { return op > 0 && op < 128 && isprint(op); }
 #include "symtab.hh"
 #include "ast.hh"
 #include "types.hh"

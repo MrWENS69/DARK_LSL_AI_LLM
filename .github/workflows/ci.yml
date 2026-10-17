@@ -5,12 +5,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  WFB_URL: https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip
+  WFB_SHA256: 8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135
+
 jobs:
   linux:
     name: Linux build and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install flex and bison
         run: |
           sudo apt-get update
@@ -19,11 +26,12 @@ jobs:
         run: make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
       - name: Test corpus
         run: sh test.sh
-      - name: Front end tests
+      - name: Front end tests and skill templates
         run: |
           python3 -m unittest -v test_lslcheck
           python3 lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
-      - uses: actions/upload-artifact@v4
+          python3 lslcheck.py --strict skills/lsl-dev/templates
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-linux64
           path: lslint
@@ -32,7 +40,7 @@ jobs:
     name: macOS build and tests
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install flex and bison
         run: brew install flex bison
       - name: Build
@@ -41,7 +49,7 @@ jobs:
           make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
       - name: Test corpus
         run: sh test.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-macos
           path: lslint
@@ -50,25 +58,27 @@ jobs:
     name: Windows build and tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install winflexbison
-        shell: cmd
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install winflexbison (checksum verified)
+        shell: pwsh
         run: |
-          curl.exe -L -o wfb.zip https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip
-          mkdir C:\flexandbison
-          tar -xf wfb.zip -C C:\flexandbison
+          Invoke-WebRequest -Uri $env:WFB_URL -OutFile wfb.zip
+          $hash = (Get-FileHash wfb.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:WFB_SHA256) { throw "winflexbison checksum mismatch: $hash" }
+          Expand-Archive wfb.zip -DestinationPath C:\flexandbison
       - name: Build
         shell: cmd
         run: build_win64.cmd ci-%GITHUB_SHA:~0,7%
       - name: Test corpus
         shell: bash
         run: sh test.sh
-      - name: Front end tests
+      - name: Front end tests and skill templates
         shell: bash
         run: |
           python -m unittest -v test_lslcheck
           python lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
-      - uses: actions/upload-artifact@v4
+          python lslcheck.py --strict skills/lsl-dev/templates
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-win64
           path: lslint.exe

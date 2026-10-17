@@ -55,12 +55,22 @@ author meant.
 | E20001 | `W_SHADOW_DECLARATION` | Declaration of `X` in this scope shadows previous declaration at (X, X) |
 | E20002 | `W_ASSIGNMENT_IN_COMPARISON` | Suggest parentheses around assignment used as truth value. |
 | E20003 | `W_CHANGE_TO_CURRENT_STATE` | Changing state to current state acts the same as return. (SL1.8.3) If this is what you intended, consider using return instead. |
-| E20004 | `W_CHANGE_STATE_HACK_CORRUPT` | Changing state in a list or string function will corrupt the stack. Using the return value from this function will cause a run-time bounds check error. See: http: Multiple jumps for label `X` - only the last will execute. |
-| E20005 | `W_CHANGE_STATE_HACK` | Empty if statement. |
-| E20006 | `W_MULTIPLE_JUMPS_FOR_LABEL` |  |
-| E20007 | `W_EMPTY_IF` | X `X` declared but never used. |
-| E20009 | `W_DECLARED_BUT_NOT_USED` | Prefixing a string with L will cause a double quote (") to be inserted at the beginning of the string. |
-| E20010 | `W_LIST_COMPARE` | print does nothing. Attempting to use the result X. |
-| E20011 | `W_CONDITION_ALWAYS_TRUE` | In LSO, (list)X_var can result in a variable of type X in the list. Use [X_var] instead. |
-| E20012 | `W_CONDITION_ALWAYS_FALSE` | Label `X` already defined in this function or event may cause unexpected behaviour (jumps will go to the last label found) |
-| E20014 | `W_UNUSED_EVENT_PARAMETER` | X in the X operand of `X` always runs: LSL does not short-circuit && and ||, and the right operand is evaluated first. Use a nested if. |
+| E20004 | `W_CHANGE_STATE_HACK_CORRUPT` | Changing state in a list or string function will corrupt the stack. Using the return value from this function will cause a run-time bounds check error. See: http://lsl.project.zone/lsl/language/state#hacks |
+| E20005 | `W_CHANGE_STATE_HACK` | Using an if statement to change state in a function is a hack and may have unintended side-effects. See: http://lsl.project.zone/lsl/language/state#hacks |
+| E20006 | `W_MULTIPLE_JUMPS_FOR_LABEL` | Multiple jumps for label `X` - only the last will execute. |
+| E20007 | `W_EMPTY_IF` | Empty if statement. |
+| E20009 | `W_DECLARED_BUT_NOT_USED` | X `X` declared but never used. |
+| E20010 | `W_LIST_COMPARE` | Using == on lists only compares lengths. See: http://wiki.secondlife.com/wiki/List#Comparing_Lists |
+| E20011 | `W_CONDITION_ALWAYS_TRUE` | Condition is always true. |
+| E20012 | `W_CONDITION_ALWAYS_FALSE` | Condition is always false. |
+| E20014 | `W_UNUSED_EVENT_PARAMETER` | Unused event parameter `X`. |
+| E20015 | `W_STATEMENTS_BEFORE_CASE` | Statements before the first case label won't be executed. |
+| E20016 | `W_CONSTANT_SWITCH` | Switch statement expression is constant. |
+| E20017 | `W_SWITCH_NO_DEFAULT` | No default label in switch; that may cause the statement to misbehave. See: https://jira.phoenixviewer.com/browse/FIRE-17710 |
+| E20018 | `W_DUPLICATE_CASE` | Duplicate case label. |
+| E20019 | `W_L_STRING` | Prefixing a string with L will cause a double quote (") to be inserted at the beginning of the string. |
+| E20020 | `W_PRINT` | print does nothing. Attempting to use the result X. |
+| E20021 | `W_KEY_OR_STR_TO_LIST` | In LSO, (list)X_var can result in a variable of type X in the list. Use [X_var] instead. |
+| E20022 | `W_DUPLICATE_LABEL_LSO` | Label `X` already defined in this function or event may cause unexpected behaviour (jumps will go to the last label found) |
+| E20023 | `W_UNINITIALIZED_VAR_IN_STR_KEY` | Initializing a global key or string using an uninitialized variable causes a runtime error when accessing it |
+| E20024 | `W_SIDE_EFFECT_IN_LOGICAL_OP` | X in the X operand of `X` always runs: LSL does not short-circuit && and ||, and the right operand is evaluated first. Use a nested if. |

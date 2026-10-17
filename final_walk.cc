@@ -317,8 +317,14 @@ void LLScriptBreakStatement::final_pre_checks() {
 // prevent f() from running. Report operands whose evaluation is observable or
 // can fail, so nobody relies on short-circuit behaviour that LSL does not have.
 
-static bool is_pure_builtin(const char *name) {
-   // Builtins that only compute a result. Prefix match, conservative on purpose.
+static bool is_effect_free_builtin(const char *name) {
+   // llGet* functions that do more than read a value.
+   static const char *impure_exceptions[] = {
+      "llGetNextEmail", "llGetAndResetTime", "llGetNotecardLine", "llGetNumberOfNotecardLines",
+      NULL
+   };
+   // Builtins that only return a value: they change no script, object or world
+   // state and start no request (they may be random). Prefix match.
    static const char *pure_prefixes[] = {
       "llGet", "llDetected", "llList2", "llListFindList", "llListSort", "llListStatistics",
       "llListRandomize", "llListInsertList", "llListReplaceList", "llDeleteSub",
@@ -337,40 +343,46 @@ static bool is_pure_builtin(const char *name) {
       NULL
    };
    int i;
+   for (i = 0; impure_exceptions[i]; ++i) {
+      if (strncmp(name, impure_exceptions[i], strlen(impure_exceptions[i])) == 0) return false;
+   }
    for (i = 0; pure_prefixes[i]; ++i) {
       if (strncmp(name, pure_prefixes[i], strlen(pure_prefixes[i])) == 0) return true;
    }
    return false;
 }
 
-// Returns a description of the first side effect found in the subtree, or NULL.
+// Returns a description of the first thing in the subtree that acts or can fail, or NULL.
 // Nested && / || expressions are skipped: they report their own operands.
-static const char *find_side_effect(LLASTNode *node) {
+static const char *find_effect_or_failure(LLASTNode *node) {
    LLASTNode *child;
+   int op;
    if (node == NULL) return NULL;
    if (node->get_node_type() == NODE_EXPRESSION) {
-      LLScriptExpression *expr = (LLScriptExpression *)node;
+      op = ((LLScriptExpression *)node)->get_operation();
+      // A nested && or || reports its own operands.
+      if (op == BOOLEAN_AND || op == BOOLEAN_OR) return NULL;
       if (node->get_node_sub_type() == NODE_FUNCTION_EXPRESSION) {
          LLScriptIdentifier *id = (LLScriptIdentifier *)node->get_child(0);
          LLScriptSymbol *symbol = id ? id->get_symbol() : NULL;
-         if (symbol == NULL || symbol->get_sub_type() != SYM_BUILTIN) return "Call to a user function";
-         if (!is_pure_builtin(id->get_name())) return "Call to a builtin with side effects";
+         if (symbol == NULL || symbol->get_sub_type() != SYM_BUILTIN) return "Call to a user function (it may act or fail)";
+         if (!is_effect_free_builtin(id->get_name())) return "Call to a builtin that acts";
       } else {
-         switch (expr->get_operation()) {
-            case BOOLEAN_AND:
-            case BOOLEAN_OR:
-               return NULL;
+         switch (op) {
             case '=': case ADD_ASSIGN: case SUB_ASSIGN: case MUL_ASSIGN: case DIV_ASSIGN: case MOD_ASSIGN:
                return "Assignment";
             case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
                return "Increment or decrement";
             case '/': case '%':
-               return "Division or modulo (can raise a Math Error)";
+               // A literal divisor cannot be zero at runtime (zero is a compile error).
+               if (node->get_child(1) == NULL || node->get_child(1)->get_constant_value() == NULL)
+                  return "Division or modulo (can raise a Math Error)";
+               break;
          }
       }
    }
    for (child = node->get_children(); child; child = child->get_next()) {
-      const char *found = find_side_effect(child);
+      const char *found = find_effect_or_failure(child);
       if (found) return found;
    }
    return NULL;
@@ -386,8 +398,8 @@ void LLScriptExpression::final_pre_checks() {
    op = operation == BOOLEAN_AND ? "&&" : "||";
    lhs = get_child(0);
    rhs = get_child(1);
-   found = find_side_effect(rhs);
+   found = find_effect_or_failure(rhs);
    if (found) ERROR( IN(rhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "right", op );
-   found = find_side_effect(lhs);
+   found = find_effect_or_failure(lhs);
    if (found) ERROR( IN(lhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "left", op );
 }

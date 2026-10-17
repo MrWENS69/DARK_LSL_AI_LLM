@@ -58,12 +58,15 @@ check: all
 
 $(OBJS): lslmini.hh
 
+# Backslashes are escaped so that builtins.cc, which unescapes \n itself, sees
+# the same text as when it reads builtins.txt with -b. update_builtins.py
+# produces byte-identical output.
 builtins_txt.cc: builtins.txt
 	echo "#ifdef _MSC_VER" > builtins_txt.cc
 	echo "#pragma execution_character_set(\"utf-8\")" >> builtins_txt.cc
 	echo "#endif" >> builtins_txt.cc
 	echo "const char *builtins_txt[] = {" >> builtins_txt.cc
-	sed -e '/^\/\//d; s/"/\\\"/g; s/^/"/; s/$$/",/' \
+	sed -e '/^\/\//d; s/\\/\\\\/g; s/"/\\\"/g; s/^/"/; s/$$/",/' \
 		builtins.txt >> builtins_txt.cc || \
 			{ rm -f builtins_txt.cc ; false ; }
 	echo "(char*)0 };" >> builtins_txt.cc

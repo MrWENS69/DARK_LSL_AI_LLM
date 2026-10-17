@@ -975,10 +975,11 @@ void usage(const char *name) {
    printf("\t-a\t\tFlag: Don't report marked warnings/errors (default on)\n");
    printf("\t-i\t\tFlag: Ignore preprocessor directives (default off)\n");
    printf("\t-u\t\tFlag: Warn about unused event parameters (default off)\n");
-   printf("\t-s\t\tFlag: Warn about side effects in && / || operands (default off)\n");
+   printf("\t-s\t\tFlag: Warn about calls, assignments, ++/-- and divisions in && / || operands (default off)\n");
    printf("\t-w\t\tFlag: Enable switch statements (default off)\n");
    printf("\t-z\t\tFlag: Enable lazy list syntax (default off)\n");
    printf("\t-G\t\tFlag: Enable god mode (default off)\n");
+   printf("\t-F\t\tFlag: Allow a user function to override a builtin (default off)\n");
 #ifdef COMPILE_ENABLED
    printf("\t-c\t\tFlag: Compile (default off)\n");
 #endif /* COMPILE_ENABLED */

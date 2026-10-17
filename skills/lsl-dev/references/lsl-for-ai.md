@@ -39,7 +39,8 @@ code written by people, and models, who know C, JavaScript or Lua.
   key that is a valid UUID and not NULL_KEY, vector not ZERO_VECTOR, rotation
   not ZERO_ROTATION, list of length not 0 (Mono). (If)
 - `list == list` compares lengths only; `!=` returns the length difference.
-  Use `llListCompare` for contents. (List)
+  To compare contents, compare `llList2CSV(a) == llList2CSV(b)` (types are
+  lost) or walk both lists element by element. (List)
 - String `==` compares length and characters; `!=` behaves like C `strcmp`,
   non-zero when different. Do not test float equality directly, use a
   tolerance. (String, Float)
@@ -103,10 +104,10 @@ code written by people, and models, who know C, JavaScript or Lua.
 - A list may not contain a list: `[(list)1]` compiles and crashes at
   runtime. Elements keep their type; negative indexes count from the end,
   -1 is the last element. (List)
-- `llList2Integer`, `llList2Float`, `llList2String`, `llList2Key` are
-  type-strict: an element of another type is cast when possible, otherwise 0
-  or ""; an out-of-range index returns 0 or "" with no error. A float stored
-  in a list and read with `llList2Integer` is cast, a string "abc" gives 0.
+- `llList2Integer`, `llList2Float`, `llList2String`, `llList2Key` convert and
+  never fail: an element of another type is cast when possible, otherwise the
+  result is 0 or ""; an out-of-range index returns 0 or "" with no error. A
+  float read with `llList2Integer` is truncated, a string "abc" gives 0.
   Check with `llGetListEntryType`. (LlList2Integer, LlList2Float, LlList2String)
 - `llListFindList` is type-strict and case-sensitive: `"1"` does not match
   `1`, a string UUID does not match a key UUID. Returns -1 if absent. The
@@ -124,10 +125,11 @@ code written by people, and models, who know C, JavaScript or Lua.
   get an integer in `[0, n-1]`. (LlFrand)
 - JSON: `llJsonGetValue` returns `JSON_INVALID` for a malformed document or
   a missing path, every value comes back as a string, nested objects as JSON
-  text. JSON_* constants are single Unicode characters, not integers. Negative
-  array indexes are not supported; `JSON_APPEND` appends. `llList2Json`
-  renders floats with six decimals. Literals are case-sensitive: `"True"` is
-  invalid. (LlJsonGetValue, Json_usage_in_LSL)
+  text. `JSON_INVALID`, `JSON_OBJECT`, `JSON_ARRAY`, `JSON_NULL`, `JSON_TRUE`
+  and `JSON_FALSE` are single Unicode characters, not integers; `JSON_APPEND`
+  is the integer -1. Negative array indexes are not supported; `JSON_APPEND`
+  appends. `llList2Json` renders floats with six decimals. Literals are
+  case-sensitive: `"True"` is invalid. (LlJsonGetValue, Json_usage_in_LSL)
 - `llGetUnixTime` is an integer that overflows on 2038-01-19; `llGetTimestamp`
   is an ISO 8601 UTC string with sub-second precision. (LlGetUnixTime, LlGetTimestamp)
 
@@ -155,14 +157,14 @@ code written by people, and models, who know C, JavaScript or Lua.
   events; beyond that new events are discarded silently. (Category:LSL_Events)
 - `llSleep` blocks the script and its queue. Default delay between events is
   one frame (0.022 s). (LlSleep, LSL_Delay)
-- Order on wear or login: `on_rez` then `attach(id != NULL_KEY)`, plus
-  `changed(CHANGED_OWNER)` after an owner change. Detach gives
-  `attach(NULL_KEY)`. Rez on ground: `on_rez`. (Event_Order)
+- Order on wear or login: `on_rez` then `attach(key avatar)` with a real
+  key, plus `changed(CHANGED_OWNER)` after an owner change. Detach gives
+  `attach` with NULL_KEY. Rez on ground: `on_rez`. (Event_Order)
 - `on_rez(start_param)`: the parameter is 0 unless rezzed by
   `llRezObject`/`llRezAtRoot`; `state_entry` runs before `on_rez` when it has
   not run yet. (On_rez)
 - `attach` does not fire on teleport or region change. (Attach)
-- `changed(integer change)` is a bit mask, test with `&`, never `==`:
+- `changed(integer changes)` is a bit mask, test with `&`, never `==`:
   CHANGED_INVENTORY 0x1, CHANGED_LINK 0x20, CHANGED_OWNER 0x80,
   CHANGED_REGION 0x100, CHANGED_TELEPORT 0x200, CHANGED_REGION_START 0x400.
   Several flags can arrive in one event. CHANGED_INVENTORY is not raised by
@@ -260,13 +262,14 @@ code written by people, and models, who know C, JavaScript or Lua.
 - One repeating sensor per script; a new `llSensorRepeat` replaces the old;
   it does not survive a state change; the first scan happens after `rate`
   seconds. (LlSensorRepeat)
-- `llCastRay` returns at most RC_MAX_HITS 256 hits and negative error codes
-  when the simulator is busy (RCERR_SIM_PERF_LOW -2). (LlCastRay)
+- `llCastRay` returns at most 256 hits (set with the `RC_MAX_HITS` option)
+  and negative error codes when the simulator is busy
+  (RCERR_SIM_PERF_LOW -2). (LlCastRay)
 
 ## 11. Notecards and dataserver
 
 - `llGetNotecardLine(name, line)` returns a request key, sleeps 0.1 s, and
-  the line arrives in `dataserver(key id, string data)`; `EOF` (three
+  the line arrives in `dataserver(key queryid, string data)`; `EOF` (three
   newlines) means past the end. Lines are capped at 1024 bytes. A missing
   notecard shouts on DEBUG_CHANNEL. (LlGetNotecardLine, EOF)
 - `llGetNumberOfNotecardLines` also answers through `dataserver`, as a

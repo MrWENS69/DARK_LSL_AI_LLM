@@ -22,7 +22,7 @@ personal data, credentials, or anything that belongs to a private project.
 | `test.sh` | Runs the corpus with `-A` assertion checking. |
 | `skills/lsl-dev/` | Installable skill for Claude Code, readable by any assistant. `references/` holds the LSL facts and the error code table. |
 | `gen_error_codes.py` | Regenerates `skills/lsl-dev/references/error-codes.md` from the logger tables. |
-| `.github/workflows/` | CI, weekly builtins refresh, releases. |
+| `.github/workflows/` | CI on Linux, macOS and Windows; daily builtins refresh (opens a pull request); releases on tags; issues to the project board. |
 
 ## Build and test
 
@@ -41,11 +41,25 @@ commit. Run it twice when touching symbol handling or the walks: two of the
 bugs fixed in this fork only showed up under certain environment sizes
 because of uninitialized memory.
 
-Debug builds (`build_win64.cmd dev debug`, `make` with the default `DEBUG`)
-use the debug CRT on Windows, which asserts on undefined behaviour such as
-`isprint()` with a token code. Those assertions are real bugs: fix them, do
-not silence them. `main()` routes assertions and aborts to stderr on MSVC so
-that no modal dialog can block a script or a CI runner.
+Debug builds: on Windows, `build_win64.cmd dev debug` uses the debug CRT,
+which asserts on undefined behaviour such as `isprint()` with a token code;
+on POSIX, `make` without `DEBUG=` adds `-ggdb` and debug logging. Those
+assertions are real bugs: fix them, do not silence them. `main()` routes
+assertions and aborts to stderr on MSVC so that no modal dialog can block a
+script or a CI runner. Do not run a debug binary over the whole corpus on a
+desktop machine until it is known to be assertion-free.
+
+## Words used here
+
+- *diagnostic*: one error or warning. Errors (`E1xxxx`) stop compilation in
+  Second Life; warnings (`E2xxxx`) compile but are very likely mistakes.
+- *builtins*: the functions, events and constants Second Life provides
+  (`llSay`, `touch_start`, `TRUE`), listed in `builtins.txt`.
+- *corpus*: the `.lsl` files under `scripts/` that `test.sh` runs.
+- *assertion marker*: a `$[E20024]`-style comment in a corpus file naming the
+  diagnostic expected on that line; `-A` checks them.
+- *Mono / LSO*: the current and the legacy script engines of Second Life.
+  `-m` (default) applies Mono rules, `-m-` LSO rules.
 
 ## Adding a diagnostic
 
@@ -64,7 +78,11 @@ that no modal dialog can block a script or a CI runner.
    folder with the right flag. Every expected diagnostic needs a marker, and
    `-A` fails on unexpected ones.
 6. Regenerate the error code table with `python gen_error_codes.py`.
-7. Mention the new option in `README.md`.
+7. Mention the new option in `README.md`. If the check enforces an LSL rule,
+   state the rule in `skills/lsl-dev/SKILL.md` and source it in
+   `skills/lsl-dev/references/lsl-for-ai.md`.
+8. A check that assistants should always run gets an opt-out in
+   `lslcheck.py` (like `--no-side-effects`), not an opt-in.
 
 ## Style
 
@@ -90,8 +108,10 @@ three files together with a message that names the lsl-definitions commit.
 - One topic per commit, imperative subject, body explains why.
 - Pull requests target `master`. Development happens on feature branches;
   `DARK_PROJECTS` is the integration branch of the maintainer.
-- A tag `vX.Y.Z` triggers the release workflow, which builds Linux and Windows
-  binaries and attaches them to a GitHub release.
+- A tag `vX.Y.Z` triggers the release workflow, which builds Linux, macOS
+  (Apple Silicon and Intel) and Windows binaries, publishes `SHA256SUMS.txt`
+  and attaches everything to a GitHub release. `lslcheck.py` downloads from
+  there, so the asset names (`lslint_<tag>_<platform>.zip`) are a contract.
 
 ## Keeping up with the other forks
 

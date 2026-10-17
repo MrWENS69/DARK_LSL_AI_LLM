@@ -27,6 +27,8 @@ default
         if (a == 1 && b++) a = 7;                                 // $[E20024] increment
         if (b != 0 && a / b > 1) a = 8;                           // $[E20024] division is not guarded
         if (b != 0 || a % b == 1) a = 8;                          // $[E20024] modulo is not guarded
+        if (a == 1 && b / 2 == 1) a = 8;                          // literal divisor: fine
+        if (a == 1 && llGetNotecardLine("cfg", 0) != NULL_KEY) a = 9; // $[E20024] llGet* that sends a request
         if (a == 1 && llListen(5, "", NULL_KEY, "")) a = 9;       // $[E20024] builtin with side effect
         if (a == 1 && (b == 2 || bump())) a = 10;                 // $[E20024] nested on the right of ||
     }

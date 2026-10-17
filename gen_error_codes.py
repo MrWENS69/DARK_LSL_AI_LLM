@@ -37,12 +37,15 @@ def messages(text, array_name, start_code):
     i = text.index("{", i)
     j = text.index("};", i)
     body = text[i + 1 : j]
-    body = re.sub(r"//[^\n]*", "", body)
-    tokens = re.findall(r'"((?:[^"\\]|\\.)*)"|(,)', body)
+    # One pass: string literals, line comments (ignored, they may contain
+    # quotes or commas, as in URLs), and the commas that separate entries.
+    tokens = re.findall(r'"((?:[^"\\]|\\.)*)"|(//[^\n]*)|(,)', body)
     result = {}
     current = []
     code = start_code
-    for literal, comma in tokens:
+    for literal, comment, comma in tokens:
+        if comment:
+            continue
         if comma:
             result[code] = "".join(current)
             current = []

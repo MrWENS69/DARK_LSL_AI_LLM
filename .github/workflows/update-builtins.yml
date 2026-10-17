@@ -1,7 +1,8 @@
 name: Update builtins
 
-# Refreshes builtins.txt from secondlife/lsl-definitions every day, rebuilds,
-# runs the test corpus and commits the result when something changed.
+# Every day: refresh builtins.txt from secondlife/lsl-definitions, rebuild,
+# run the test corpus, and open a pull request when the definitions changed.
+# Nothing is pushed to the default branch without review.
 
 on:
   schedule:
@@ -9,23 +10,27 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install flex and bison
         run: |
           sudo apt-get update
           sudo apt-get install -y flex bison
       - name: Refresh builtins
         run: python3 update_builtins.py
-      - name: Detect changes
+      - name: Detect changes (ignoring the header line that carries the source commit)
         id: diff
         run: |
-          if git diff --quiet -- builtins.txt builtins_txt.cc; then
+          if git diff --quiet -I'^// Generated from' -- builtins.txt builtins_txt.cc; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -35,11 +40,39 @@ jobs:
         run: |
           make DEBUG= BUILD_VERSION_NUMBER=builtins-check
           sh test.sh
-      - name: Commit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.diff.outputs.changed == 'true'
+        with:
+          name: builtins
+          path: |
+            builtins.txt
+            builtins_txt.cc
+            builtins_version.txt
+
+  pull-request:
+    needs: refresh
+    if: needs.refresh.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: builtins
+      - name: Commit on a branch and open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          commit=$(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)
+          branch="builtins/${commit}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
           git add builtins.txt builtins_txt.cc builtins_version.txt
-          git commit -m "builtins: sync with secondlife/lsl-definitions $(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)"
-          git push
+          git commit -m "builtins: sync with secondlife/lsl-definitions ${commit}"
+          git push origin "$branch"
+          gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title "builtins: sync with secondlife/lsl-definitions ${commit}" \
+            --body "Automated refresh from lsl-definitions. Built and tested on Linux before this PR was opened; CI runs the full matrix here."
