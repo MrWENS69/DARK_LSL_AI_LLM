@@ -78,7 +78,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.8"
-      - name: The Python side on the oldest supported version (no lslint binary: its tests skip)
+      - name: The Python side on the oldest supported version (no lslint binary, so its tests skip)
         run: |
           python --version
           python -m unittest -v test_lslcheck test_lsltest test_update_builtins
