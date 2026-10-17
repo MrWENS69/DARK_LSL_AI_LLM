@@ -1,5 +1,0 @@
-LSL2 Derived Files Generator version: 0.0.20240415000
-Database version: 0.0.20250202000
-Based on the following grid versions:
-	sl (Second Life): 2024-12-17.12379604629
-	os (OpenSimulator): v0.9.2.1

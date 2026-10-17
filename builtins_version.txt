@@ -1,0 +1,4 @@
+Source: https://github.com/secondlife/lsl-definitions
+Commit: 41e31e48b5aa410d0f5108c3becc9d6ceb5a6026
+Date: 2026-10-15
+File: generated/builtins.txt
