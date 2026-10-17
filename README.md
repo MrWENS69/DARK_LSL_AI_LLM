@@ -67,7 +67,9 @@ exit codes. Both get builtins that match the live grid.
   functions, a call to a builtin that acts (`llSay`, `llListen`,
   `llGetNotecardLine`...), an assignment, `++`/`--`, a division or a modulo
   by a non-literal. Pure reads and computations (`llGetOwner`, `llList2*`,
-  `llAbs`...) are not reported.
+  `llAbs`...) are not reported, and neither is a forced delay alone
+  (`llModPow`, `llXorBase64Strings`, `llGetParcelPrimOwners`): the script
+  stalls, nothing changes.
 - **Three bug fixes** in the analyzer: an uninitialized switch-depth counter
   made error 10033 (break outside switch) appear or vanish depending on the
   environment, a dangling symbol pointer in `-F` mode produced random "Not all

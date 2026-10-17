@@ -321,10 +321,12 @@ void LLScriptBreakStatement::final_pre_checks() {
 
 static bool is_effect_free_builtin(const char *name) {
    // Functions that act although their name says otherwise (queue pop, timer
-   // reset, dataserver request, forced delay).
+   // reset, dataserver request). A forced delay alone is not an effect: the
+   // script stalls but nothing changes, so llGetParcelPrimOwners (2.0 s),
+   // llModPow (1.0 s) and llXorBase64Strings (0.3 s) stay effect-free.
    static const char *acting_exact[] = {
       "llGetNextEmail", "llGetAndResetTime", "llGetNotecardLine", "llGetNumberOfNotecardLines",
-      "llGetSimulatorHostname", "llGetParcelPrimOwners",
+      "llGetSimulatorHostname",
       NULL
    };
    // Effect-free functions whose name does not match a prefix below.
