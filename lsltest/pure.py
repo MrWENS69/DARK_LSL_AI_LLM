@@ -204,12 +204,14 @@ def llListFindList(src, test):
 
 
 def llListFindStrided(src, test, start, end, stride):
-    # stride positions are counted from the start of the list, as in llList2ListStrided
+    # the stride is counted from start (wiki: start 1 with stride 2 misses an element at index 4)
     if stride < 1:
         stride = 1
     n = len(test)
-    for i in _norm_range(len(src), start, end):
-        if i % stride == 0 and i + n <= len(src):
+    indexes = _norm_range(len(src), start, end)
+    first = indexes[0] if indexes else 0
+    for i in indexes:
+        if (i - first) % stride == 0 and i + n <= len(src):
             if all(_same(src[i + j], test[j]) for j in range(n)):
                 return i
     return -1
@@ -424,7 +426,12 @@ def llReplaceSubString(src, pattern, replacement, count):
 
 
 def llEscapeURL(url):
-    return urllib.parse.quote(url.encode("utf-8"), safe="")
+    # the grid escapes every byte outside [a-zA-Z0-9], the - _ . ~ of RFC 3986 included (wiki)
+    out = []
+    for byte in url.encode("utf-8"):
+        c = chr(byte)
+        out.append(c if ("a" <= c <= "z" or "A" <= c <= "Z" or "0" <= c <= "9") else "%%%02X" % byte)
+    return "".join(out)
 
 
 def llUnescapeURL(url):

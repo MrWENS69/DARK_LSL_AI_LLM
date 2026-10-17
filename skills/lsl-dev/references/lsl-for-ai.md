@@ -114,6 +114,10 @@ code written by people, and models, who know C, JavaScript or Lua.
   (LlList2Vector)
 - `llHMAC(key, message, algorithm)` returns the Base64 of the digest;
   algorithms md5, sha1, sha224, sha256, sha384, sha512. (LlHMAC)
+- `llEscapeURL` escapes every byte outside `[a-zA-Z0-9]`, so `-`, `_`, `.`
+  and `~` come out as `%2D`, `%5F`, `%2E`, `%7E`. (LlEscapeURL)
+- `llListFindStrided(src, test, start, end, stride)` counts the stride from
+  `start`, not from index 0. (LlListFindStrided)
   Check with `llGetListEntryType`. (LlList2Integer, LlList2Float, LlList2String)
 - `llListFindList` is type-strict and case-sensitive: `"1"` does not match
   `1`, a string UUID does not match a key UUID. Returns -1 if absent. The
@@ -232,6 +236,8 @@ code written by people, and models, who know C, JavaScript or Lua.
   maximum 16384 under Mono. Redirects are followed for GET only. Setting
   Content-Type via HTTP_CUSTOM_HEADER is a runtime error, use HTTP_MIMETYPE.
   Custom headers total under 4096 characters. (LlHTTPRequest)
+- `llGetHTTPHeader(id, name)`: the name must be lower case (`"user-agent"`,
+  `"x-query-string"`), any other case matches nothing. (LlGetHTTPHeader)
 - `http_response` fires in every script of the prim: always match
   `request_id` with the key you stored. (LlHTTPRequest)
 - HTTP-in: `llRequestURL` answers in `http_request` with

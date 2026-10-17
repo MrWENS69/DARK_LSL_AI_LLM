@@ -1085,7 +1085,7 @@ class Simulator(object):
         pending = self.http_in_pending.get(request_id)
         if pending is None:
             return ""
-        return pending["headers"].get(header.lower(), "")
+        return pending["headers"].get(header, "")      # the name must be lower case or it matches nothing (wiki)
 
     # --- link messages ---------------------------------------------------------
 
