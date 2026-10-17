@@ -59,7 +59,7 @@ exit codes. Both get builtins that match the live grid.
 - **`build_win64.cmd`**: builds on Windows with the free Visual Studio Build
   Tools and winflexbison, no IDE.
 - **GitHub Actions**: build and test on Linux and Windows for every push,
-  weekly builtins refresh, release binaries on tags. The upstream CircleCI
+  daily builtins refresh, release binaries on tags. The upstream CircleCI
   configuration is removed.
 - **Documentation for assistants**: `skills/lsl-dev/` is a ready-to-install
   skill for Claude Code and a readable checklist for any other assistant. Its

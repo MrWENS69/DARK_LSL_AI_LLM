@@ -1,11 +1,11 @@
 name: Update builtins
 
-# Refreshes builtins.txt from secondlife/lsl-definitions once a week, rebuilds,
+# Refreshes builtins.txt from secondlife/lsl-definitions every day, rebuilds,
 # runs the test corpus and commits the result when something changed.
 
 on:
   schedule:
-    - cron: "17 5 * * 1"
+    - cron: "17 5 * * *"
   workflow_dispatch:
 
 permissions:

@@ -93,6 +93,22 @@ three files together with a message that names the lsl-definitions commit.
 - A tag `vX.Y.Z` triggers the release workflow, which builds Linux and Windows
   binaries and attaches them to a GitHub release.
 
+## Keeping up with the other forks
+
+Two remotes are worth tracking: `upstream` (Makopo/lslint, the parent) and
+`mikelittman` (https://github.com/mikelittman/lslint, the most active fork:
+daily builtins from lsl-definitions, GitHub Actions). Before a release:
+
+```sh
+git fetch upstream mikelittman
+git log --oneline DARK_PROJECTS..upstream/master
+git diff --stat mikelittman/master DARK_PROJECTS -- '*.cc' '*.hh' '*.y' '*.l'
+```
+
+Cherry-pick code fixes, credit them in the README "Sources" section, and
+leave their builtins alone: ours come from the same lsl-definitions file
+through `update_builtins.py`.
+
 ## Public repository rules
 
 - No real names, UUIDs, region names, URLs of private services, API keys, or
