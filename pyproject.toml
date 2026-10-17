@@ -23,6 +23,11 @@ Issues = "https://github.com/MrWENS69/DARK_LSL_AI_LLM/issues"
 
 [project.scripts]
 lslcheck = "lslcheck:main"
+lsltest = "lsltest.__main__:main"
 
 [tool.setuptools]
 py-modules = ["lslcheck"]
+packages = ["lsltest"]
+
+[tool.setuptools.package-data]
+lsltest = ["data/builtins.txt"]

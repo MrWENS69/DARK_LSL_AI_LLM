@@ -20,6 +20,66 @@ Use `--json` when you need to act on the result programmatically, `-q` for a
 one-line verdict, `--lso` to check a script that must also run on the legacy
 engine.
 
+## 1b. Run it: unit tests with lsltest
+
+`lsltest` runs a script outside Second Life: a Python interpreter with LSL
+semantics and a fake simulator that captures what the script does. Write a
+test file next to the script, drive it through the simulator, assert on the
+outcome. Every example in `templates/tests/test_templates.py` follows this
+shape:
+
+```python
+from lsltest import LslTestCase
+
+class DoorTest(LslTestCase):
+    def test_owner_opens_and_timer_closes(self):
+        script = self.load("door.lsl")        # attaches the script to a default object
+        self.sim.start()                      # runs state_entry
+        self.sim.touch()                      # touch_start/touch/touch_end by the owner
+        self.assertGlobal(script, "gOpen", 1)
+        self.sim.tick(9.0)                    # the clock moves, timers fire
+        self.assertGlobal(script, "gOpen", 0)
+        self.assertNoErrors()
+```
+
+Run with `python -m lsltest tests/` (or `lsltest tests/` when installed).
+`lsltest script.lsl` with no test does a smoke run: state_entry, one touch,
+and prints what the simulator saw.
+
+What you can drive: `sim.touch(avatar)`, `sim.say(avatar, channel, text)`,
+`sim.dialog_reply(avatar, button)`, `sim.tick(seconds)`, `sim.changed(flags)`,
+`sim.on_rez(param)`, `sim.attach(avatar)` / `sim.detach()`,
+`sim.link_message(num, text, id)`, `sim.money(avatar, amount)`,
+`sim.reset(script)`, `sim.http_respond(status, body)` for an outbound
+request, `sim.http_in_request(url, method, body)` for the script's own URL,
+`sim.notecard(name, text)` to put a notecard in the object,
+`sim.permission_policy` (True, False, or a function of avatar and mask),
+`sim.avatar(name, group=...)` to create other residents.
+
+What you can assert: `assertSaid(text, channel)`, `assertOwnerSaid`,
+`assertSaidTo(avatar, text)`, `assertNotSaid`, `assertDialog(buttons=,
+contains=)`, `assertListening(channel)`, `assertNoListens()`,
+`assertHttpRequest(url_contains=, method=)`, `assertLinkMessage(num=)`,
+`assertCalled("llSetColor")` for builtins the simulator does not model (it
+records them instead of failing), `assertState(script, "name")`,
+`assertGlobal(script, "name", value)`, `assertNoErrors()`,
+`assertError("Math Error")`.
+
+What the simulator enforces, like the grid: both operands of `&&` and `||`
+run, integer division truncates, `/` and `%` by zero kill the script with
+"Math Error", 64 queued events then silent drops, 65 listens then "Too Many
+Listens", dialogs with more than 12 buttons or labels over 24 bytes fail,
+chat is cut at 1024 bytes, hover text at 254, incoming HTTP bodies at 2048,
+linkset data at 128 KiB, `llSleep` and forced delays move the clock, a state
+change releases listens but not the timer.
+
+What it does not model: physics, movement, rendering, region crossings,
+avatar animations beyond recording the call, sensors beyond distance to the
+avatars and objects you created, money beyond the event. A builtin it does
+not model is recorded with its arguments and returns the type's default
+value; `Simulator(strict=True)` raises instead, when a test must not pass by
+accident.
+
 ## 2. Read it like the simulator does
 
 Before any in-world test, walk the script with these questions. They cover

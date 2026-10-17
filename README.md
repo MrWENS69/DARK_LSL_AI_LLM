@@ -80,6 +80,15 @@ exit codes. Both get builtins that match the live grid.
   or `pipx`; downloads and caches the release binary for the platform when
   none is installed, after checking its SHA-256 against the release's
   `SHA256SUMS.txt`.
+- **`lsltest`**, LSL unit tests outside Second Life: a Python interpreter
+  with LSL semantics (strict types, 32-bit integers, truncating division,
+  both operands of `&&` / `||` evaluated right to left, single-precision
+  floats, states, jumps) and a fake simulator that captures chat, dialogs,
+  listens, timers, link messages, notecards, HTTP out and in, permissions
+  and linkset data. `python -m lsltest tests/` runs `unittest` files written
+  with `LslTestCase`; `lsltest script.lsl` does a smoke run. Every template
+  of the skill ships with its tests. Standard library only, same package as
+  `lslcheck`.
 - **`build_win64.cmd`**: builds on Windows with the free Visual Studio Build
   Tools and winflexbison, no IDE.
 - **GitHub Actions**: build and test on Linux, macOS and Windows for every

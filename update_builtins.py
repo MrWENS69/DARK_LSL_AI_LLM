@@ -144,6 +144,9 @@ def main():
     BUILTINS_TXT.write_text(new_text, encoding="utf-8", newline="\n")
     BUILTINS_CC.write_text(render_cc(new_text), encoding="utf-8", newline="\n")
     VERSION_TXT.write_text(version_body, encoding="utf-8", newline="\n")
+    bundled = ROOT / "lsltest" / "data" / "builtins.txt"      # the copy shipped inside the lsltest package
+    if bundled.parent.is_dir():
+        bundled.write_text(new_text, encoding="utf-8", newline="\n")
     print("wrote %s, %s, %s" % (BUILTINS_TXT.name, BUILTINS_CC.name, VERSION_TXT.name))
     return 0
 

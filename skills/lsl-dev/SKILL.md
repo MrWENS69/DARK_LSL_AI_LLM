@@ -29,9 +29,16 @@ a warning.
    message`, then a summary line.
 4. **Fix every error. Read every warning** and either fix it or explain in one
    sentence why it is intended. `--strict` makes warnings fail on purpose.
-5. **Repeat until the summary says `0 error(s), 0 warning(s)`**, then give the
-   script to the human together with that last line. Never hand over a script
-   you have not linted.
+5. **Test it**: write `tests/test_<script>.py` with `lsltest` (see
+   `references/testing.md`, section 1b, and `templates/tests/` for the
+   shape): one test per behaviour the human asked for, driven through the
+   simulator (touch, chat, dialog replies, clock, HTTP), asserting on what
+   the script said or did. Run `python -m lsltest tests/`. A failing test is
+   a bug in the script until proven otherwise.
+6. **Repeat until the lint says `0 error(s), 0 warning(s)` and the tests are
+   green**, then give the script to the human together with those two lines
+   and the in-world test plan (section 4 of `references/testing.md`). Never
+   hand over a script you have not linted and tested.
 
 If `lslcheck` exits with code 2 and says the binary is missing, it could not
 download it: build it (`build_win64.cmd` on Windows, `make` elsewhere, see the

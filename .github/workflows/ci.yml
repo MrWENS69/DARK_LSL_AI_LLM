@@ -26,11 +26,12 @@ jobs:
         run: make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
       - name: Test corpus
         run: sh test.sh
-      - name: Front end tests and skill templates
+      - name: Front end tests, lsltest, skill templates
         run: |
-          python3 -m unittest -v test_lslcheck
+          python3 -m unittest -v test_lslcheck test_lsltest
           python3 lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
           python3 lslcheck.py --strict skills/lsl-dev/templates
+          python3 -m lsltest skills/lsl-dev/templates/tests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-linux64
@@ -72,12 +73,13 @@ jobs:
       - name: Test corpus
         shell: bash
         run: sh test.sh
-      - name: Front end tests and skill templates
+      - name: Front end tests, lsltest, skill templates
         shell: bash
         run: |
-          python -m unittest -v test_lslcheck
+          python -m unittest -v test_lslcheck test_lsltest
           python lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
           python lslcheck.py --strict skills/lsl-dev/templates
+          python -m lsltest skills/lsl-dev/templates/tests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-win64
