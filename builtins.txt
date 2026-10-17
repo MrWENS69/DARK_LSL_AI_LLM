@@ -1,4 +1,4 @@
-// Generated from secondlife/lsl-definitions commit 41e31e48b5aa (2026-10-15) by update_builtins.py
+// Generated from secondlife/lsl-definitions commit e0cdd24d8606 (2026-10-17) by update_builtins.py
 integer llAbs( integer val )
 float llAcos( float val )
 void llAddToLandBanList( key avatar, float hours )
