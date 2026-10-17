@@ -9,7 +9,7 @@ rem     https://github.com/lexxmark/winflexbison/releases
 rem
 rem Usage: build_win64.cmd [version] [debug]
 rem   build_win64.cmd            -> lslint.exe version "dev"
-rem   build_win64.cmd 1.2.0      -> lslint.exe version "1.2.0"
+rem   build_win64.cmd 1.3.0      -> lslint.exe version "1.3.0"
 rem   build_win64.cmd dev debug   -> debuggable build (DEBUG=1 for nmake)
 setlocal
 

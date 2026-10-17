@@ -200,7 +200,7 @@ triples. The hyphenated keys are Linden Lab's own field names.
 POSIX (Linux, macOS): `flex`, `bison` and a C++ compiler, then
 
 ```sh
-make DEBUG= BUILD_VERSION_NUMBER=1.2.0
+make DEBUG= BUILD_VERSION_NUMBER=1.3.0
 sh test.sh
 ```
 
@@ -212,9 +212,9 @@ with the "Desktop development with C++" workload, unpack
 
 ```bat
 rem release build, lslint.exe in the repository root
-build_win64.cmd 1.2.0
+build_win64.cmd 1.3.0
 rem debuggable build (debug CRT, symbols)
-build_win64.cmd 1.2.0 debug
+build_win64.cmd 1.3.0 debug
 ```
 
 and run the tests from Git Bash with `sh test.sh`.

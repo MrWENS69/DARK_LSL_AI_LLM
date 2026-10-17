@@ -1,3 +1,25 @@
+1.3.0: 2026-10-17
+	- lsltest: run LSL scripts and their unit tests outside Second Life (interpreter
+	  with LSL semantics, fake simulator, LslTestCase assertions, python -m lsltest)
+	- lslcheck --doc NAME: offline reference of every function, event and constant,
+	  generated from Linden Lab's lsl_definitions.yaml with the builtins
+	- -s: new warning 20025, a variable written in one function argument, list
+	  element, vector or rotation component and used in another (the globals
+	  written by called user functions included). lslcheck passes -s by default,
+	  so --strict pipelines may newly fail on such patterns; --no-side-effects
+	  turns both -s rules off. A forced delay alone is no longer an effect.
+	- lslint: the message buffers of the logger are bounded (a long identifier
+	  in a diagnostic no longer overruns a static array)
+	- CI: the Python side also runs on macOS and on Python 3.8; the daily
+	  builtins refresh also updates the --doc reference
+	- skill: verified facts added (llSensor 32, linking 64 m, llHMAC Base64,
+	  llGetWallclock daylight saving, llList2Json literals, HTTP headers...)
+
+1.2.0: 2026-10-17
+	- builtins from secondlife/lsl-definitions (update_builtins.py), -s warning
+	  20024 on side effects in && / ||, lslcheck front end, Windows build,
+	  GitHub Actions on three platforms, release binaries, skill for assistants
+
 0.4.2: 2011-06-06
 	- added "Not all code paths return a value" error
 	- added compiled binaries
