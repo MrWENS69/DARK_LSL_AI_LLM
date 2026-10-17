@@ -1,4 +1,5 @@
 #include "lslmini.hh"
+#include <math.h>
 
 // 1 sign + 39 digits + 1 point + 6 decimals
 #define FLOAT_AS_STR_MAX_LENGTH (1 + 39 + 1 + 6)
@@ -638,7 +639,7 @@ void LLScriptTypecastExpression::determine_value() {
                   double d;
                   float f = 0.0f;
                   if ( sscanf( ((LLScriptStringConstant *)value)->get_value(), "%lf", &d ) == 1 ) {
-                     if ( !mono_mode || (d <= -1.1754943157898259e-38 || d >= 1.1754943157898259e-38) ) {
+                     if ( !mono_mode || (fabs(d) >= 1.1754943157898259e-38) ) {
                         f = (float)d;
                      }
                   }

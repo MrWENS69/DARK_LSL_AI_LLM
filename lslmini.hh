@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h> // isprint()
+
+// isprint() is undefined (and asserts in the MSVC debug CRT) outside 0..255;
+// operator codes from the parser are bison token numbers, far above that.
+inline bool is_printable_operator(int op) { return op > 0 && op < 128 && isprint(op); }
 #include <stdint.h>
 #include <cstdarg>
 #include <set>
@@ -58,7 +62,7 @@ class LLScriptScript : public LLASTNode {
       : LLASTNode( 2, globals, states ), switchlevel(0) {
         symbol_table = new LLScriptSymbolTable();
     };
-    LLScriptScript() : LLASTNode( 0 ) {
+    LLScriptScript() : LLASTNode( 0 ), switchlevel(0) {
         symbol_table = new LLScriptSymbolTable();
     };
 #ifdef COMPILE_ENABLED
@@ -523,7 +527,7 @@ class LLScriptDeclaration : public LLScriptStatement {
 
 class LLScriptExpression : public LLASTNode {
   public:
-    LLScriptExpression() : LLASTNode(0) {};
+    LLScriptExpression() : LLASTNode(0), operation(0) {};
 	LLScriptExpression( int num, ... ) : LLASTNode(0), operation(0) {
       va_list ap;
       va_start(ap, num);
@@ -542,7 +546,7 @@ class LLScriptExpression : public LLASTNode {
 
     virtual const char *get_node_name() {
       static char buf[256];
-      sprintf( buf, isprint(operation) ? "expression: '%c'" : "expression: =%d", operation );
+      sprintf( buf, is_printable_operator(operation) ? "expression: '%c'" : "expression: =%d", operation );
       return (const char *)buf;
     };
     virtual LLNodeType get_node_type() { return NODE_EXPRESSION; };

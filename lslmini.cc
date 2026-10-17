@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <string>
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
 #include "lslmini.hh"
 #include "logger.hh"
 
@@ -166,6 +169,8 @@ void LLASTNode::define_symbol(LLScriptSymbol *symbol) {
            && shadow->get_symbol_type() == SYM_FUNCTION
            && shadow->get_sub_type() != SYM_BUILTIN ) {
          script->get_symbol_table()->remove(shadow);
+         // Unlink the previous definition but keep the object alive: identifiers of the
+         // earlier declaration still point to it and are read again in final_pre_checks().
          delete shadow;
          shadow = NULL;
       }
@@ -369,7 +374,7 @@ static const char* operation_str(int operation) {
       case SHIFT_LEFT:    return "<<";
       case SHIFT_RIGHT:   return ">>";
       default:
-                          if ( isprint(operation) ) {
+                          if ( is_printable_operator(operation) ) {
                              buf[0] = operation;
                              buf[1] = 0;
                           } else {
@@ -1041,6 +1046,19 @@ int main(int argc, const char **argv) {
    Logger *logger = Logger::get();
 
    logger->set_check_assertions(EXPECTED_ASSERTIONS);
+#ifdef _MSC_VER
+   // A lint tool runs from scripts and CI: report aborts and assertions on
+   // stderr, never through a modal dialog box.
+   _set_error_mode(_OUT_TO_STDERR);
+   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#ifdef _DEBUG
+   _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+   _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+   _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+   _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+#endif
+
 
 #ifdef COMPILE_ENABLED
    bool compile   = true;
