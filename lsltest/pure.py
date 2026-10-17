@@ -1,5 +1,8 @@
 """Pure builtins: functions that compute a result without touching the simulator.
 
+Names match builtins.txt exactly (llAbs, llList2String...); the simulator looks a
+function up here when it has no ll_Xxx handler of its own.
+
 Each entry maps the LSL name to a Python callable taking the LSL argument
 values (already coerced to the declared parameter types) and returning an
 LSL value. Functions that act on the world live in sim.py.
@@ -7,27 +10,40 @@ LSL value. Functions that act on the world live in sim.py.
 
 import base64
 import hashlib
+import hmac
 import json
 import math
 import urllib.parse
 
 from .errors import ScriptError
-from .lexer import to_int32
-from .values import (Key, Vector, Rotation, f32, to_string, type_of, cast, truthy, is_valid_key,
-                     ZERO_VECTOR, ZERO_ROTATION, NULL_KEY, format_float)
+from .signatures import CONSTANTS
+from .values import (Key, Vector, Rotation, f32, to_int32, to_string, type_of, cast, default_value, format_float,
+                     rot_mul, vec_rotate, ZERO_VECTOR, ZERO_ROTATION)
 
-JSON_INVALID = "﷐"
-JSON_OBJECT = "﷑"
-JSON_ARRAY = "﷒"
-JSON_NUMBER = "﷓"
-JSON_STRING = "﷔"
-JSON_NULL = "﷕"
-JSON_TRUE = "﷖"
-JSON_FALSE = "﷗"
-JSON_DELETE = "﷘"
+# LSL constants come from builtins.txt, never from a literal here.
+JSON_INVALID, JSON_OBJECT, JSON_ARRAY, JSON_NUMBER, JSON_STRING, JSON_NULL, JSON_TRUE, JSON_FALSE, JSON_DELETE = (
+    CONSTANTS[n] for n in ("JSON_INVALID", "JSON_OBJECT", "JSON_ARRAY", "JSON_NUMBER", "JSON_STRING", "JSON_NULL",
+                           "JSON_TRUE", "JSON_FALSE", "JSON_DELETE"))
+TYPE_INVALID, TYPE_INTEGER, TYPE_FLOAT, TYPE_STRING, TYPE_KEY, TYPE_VECTOR, TYPE_ROTATION = (
+    CONSTANTS[n] for n in ("TYPE_INVALID", "TYPE_INTEGER", "TYPE_FLOAT", "TYPE_STRING", "TYPE_KEY", "TYPE_VECTOR",
+                           "TYPE_ROTATION"))
+STRING_TRIM_HEAD, STRING_TRIM_TAIL, STRING_TRIM = (CONSTANTS[n] for n in ("STRING_TRIM_HEAD", "STRING_TRIM_TAIL",
+                                                                          "STRING_TRIM"))
 
-TYPE_INVALID, TYPE_INTEGER, TYPE_FLOAT, TYPE_STRING, TYPE_KEY, TYPE_VECTOR, TYPE_ROTATION = range(7)
-STRING_TRIM_HEAD, STRING_TRIM_TAIL, STRING_TRIM = 1, 2, 3
+_HASHES = {"md5": hashlib.md5, "sha1": hashlib.sha1, "sha224": hashlib.sha224, "sha256": hashlib.sha256,
+           "sha384": hashlib.sha384, "sha512": hashlib.sha512}
+
+
+def _b64decode(text):
+    return base64.b64decode(text + "=" * (-len(text) % 4))
+
+
+def _clamp1(x):
+    return max(-1.0, min(1.0, x))
+
+
+def _dumps(value):
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
 # --- lists ---------------------------------------------------------------------
@@ -58,7 +74,7 @@ def _list_get(src, index, type_name):
     if index < 0:
         index += len(src)
     if index < 0 or index >= len(src):
-        return {"integer": 0, "float": 0.0, "string": "", "key": Key(""), "vector": ZERO_VECTOR, "rotation": ZERO_ROTATION}[type_name]
+        return default_value(type_name)
     value = src[index]
     t = type_of(value)
     if t == type_name:
@@ -78,7 +94,7 @@ def _list_get(src, index, type_name):
             return cast(value, "rotation") if t == "string" else ZERO_ROTATION
     except ScriptError:
         pass
-    return _list_get([], 0, type_name)
+    return default_value(type_name)
 
 
 def llList2Integer(src, index):
@@ -158,12 +174,12 @@ def llListFindList(src, test):
 
 
 def llListFindStrided(src, test, start, end, stride):
+    # stride positions are counted from the start of the list, as in llList2ListStrided
     if stride < 1:
         stride = 1
-    indexes = _norm_range(len(src), start, end)
     n = len(test)
-    for i in indexes:
-        if (i - (indexes[0] if indexes else 0)) % stride == 0 and i + n <= len(src):
+    for i in _norm_range(len(src), start, end):
+        if i % stride == 0 and i + n <= len(src):
             if all(_same(src[i + j], test[j]) for j in range(n)):
                 return i
     return -1
@@ -190,15 +206,8 @@ def llListSort(src, stride, ascending):
     return [v for c in chunks for v in c]
 
 
-def llListRandomize(src, stride):
-    # deterministic in tests: the simulator overrides this with its seeded RNG
-    return list(src)
-
-
 def llList2ListStrided(src, start, end, stride):
-    if stride < 1:
-        stride = 1
-    return [src[i] for i in _norm_range(len(src), start, end) if i % stride == 0]
+    return llList2ListSlice(src, start, end, stride, 0)
 
 
 def llList2ListSlice(src, start, end, stride, slice_index):
@@ -378,8 +387,7 @@ def llStringToBase64(text):
 
 def llBase64ToString(text):
     try:
-        padded = text + "=" * (-len(text) % 4)
-        return base64.b64decode(padded).decode("utf-8", "replace").replace("\x00", "")
+        return _b64decode(text).decode("utf-8", "replace").replace("\x00", "")
     except (ValueError, UnicodeDecodeError):
         return ""
 
@@ -390,7 +398,7 @@ def llIntegerToBase64(number):
 
 def llBase64ToInteger(text):
     try:
-        raw = base64.b64decode(text + "=" * (-len(text) % 4))[:4].ljust(4, b"\0")
+        raw = _b64decode(text)[:4].ljust(4, b"\0")
         return to_int32(int.from_bytes(raw, "big"))
     except ValueError:
         return 0
@@ -398,8 +406,8 @@ def llBase64ToInteger(text):
 
 def llXorBase64(s1, s2):
     try:
-        a = base64.b64decode(s1 + "=" * (-len(s1) % 4))
-        b = base64.b64decode(s2 + "=" * (-len(s2) % 4))
+        a = _b64decode(s1)
+        b = _b64decode(s2)
     except ValueError:
         return ""
     if not b:
@@ -421,17 +429,14 @@ def llSHA256String(src):
 
 
 def llHMAC(authkey, message, hashalg):
-    import hmac
-    alg = {"sha1": hashlib.sha1, "sha224": hashlib.sha224, "sha256": hashlib.sha256,
-           "sha384": hashlib.sha384, "sha512": hashlib.sha512, "md5": hashlib.md5}.get(hashalg.lower())
+    alg = _HASHES.get(hashalg.lower())
     if alg is None:
         return ""
     return hmac.new(authkey.encode("utf-8"), message.encode("utf-8"), alg).hexdigest()
 
 
 def llComputeHash(data, algorithm):
-    alg = {"md5": hashlib.md5, "sha1": hashlib.sha1, "sha224": hashlib.sha224, "sha256": hashlib.sha256,
-           "sha384": hashlib.sha384, "sha512": hashlib.sha512}.get(algorithm.lower())
+    alg = _HASHES.get(algorithm.lower())
     if alg is None:
         return ""
     return alg(data.encode("utf-8")).hexdigest()
@@ -493,11 +498,14 @@ def _lsl_from_json_value(value):
         return JSON_TRUE
     if value is False:
         return JSON_FALSE
-    if isinstance(value, (int, float)):
-        return str(value) if isinstance(value, int) else format_float(value, 6).rstrip("0").rstrip(".") if "." in format_float(value, 6) else format_float(value, 6)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        text = format_float(value, 6)
+        return text.rstrip("0").rstrip(".") if "." in text else text
     if isinstance(value, str):
         return value
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return _dumps(value)
 
 
 def _json_walk(root, specifiers):
@@ -607,7 +615,7 @@ def llJsonSetValue(text, specifiers, value):
         root = set_in(root, list(specifiers))
     except ValueError:
         return JSON_INVALID
-    return json.dumps(root, separators=(",", ":"), ensure_ascii=False)
+    return _dumps(root)
 
 
 def llList2Json(json_type, values):
@@ -617,9 +625,9 @@ def llList2Json(json_type, values):
         obj = {}
         for i in range(0, len(values), 2):
             obj[to_string(values[i])] = _json_value_from_lsl(values[i + 1])
-        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+        return _dumps(obj)
     if json_type == JSON_ARRAY:
-        return json.dumps([_json_value_from_lsl(v) for v in values], separators=(",", ":"), ensure_ascii=False)
+        return _dumps([_json_value_from_lsl(v) for v in values])
     return JSON_INVALID
 
 
@@ -648,20 +656,26 @@ def llFabs(value):
     return f32(abs(value))
 
 
+def _finite_int(value, fn):
+    if math.isnan(value) or math.isinf(value):
+        return -2147483648
+    return to_int32(int(fn(value)))
+
+
 def llFloor(value):
-    return to_int32(int(math.floor(value)))
+    return _finite_int(value, math.floor)
 
 
 def llCeil(value):
-    return to_int32(int(math.ceil(value)))
+    return _finite_int(value, math.ceil)
 
 
 def llRound(value):
-    return to_int32(int(math.floor(value + 0.5)))
+    return _finite_int(value, lambda v: math.floor(v + 0.5))
 
 
 def llSqrt(value):
-    if value < 0:
+    if math.isnan(value) or value < 0:
         raise ScriptError("Math Error", "llSqrt of a negative number")
     return f32(math.sqrt(value))
 
@@ -699,11 +713,11 @@ def llAtan2(y, x):
 
 
 def llAsin(value):
-    return f32(math.asin(max(-1.0, min(1.0, value))))
+    return f32(math.asin(_clamp1(value)))
 
 
 def llAcos(value):
-    return f32(math.acos(max(-1.0, min(1.0, value))))
+    return f32(math.acos(_clamp1(value)))
 
 
 def llModPow(a, b, c):
@@ -732,7 +746,6 @@ def llEuler2Rot(v):
     cy, sy = math.cos(v[1] / 2.0), math.sin(v[1] / 2.0)
     cz, sz = math.cos(v[2] / 2.0), math.sin(v[2] / 2.0)
     # LSL order: rotate about X, then Y, then Z (global axes)
-    from .values import rot_mul
     rx = Rotation(sx, 0.0, 0.0, cx)
     ry = Rotation(0.0, sy, 0.0, cy)
     rz = Rotation(0.0, 0.0, sz, cz)
@@ -763,27 +776,24 @@ def llRot2Axis(r):
 
 
 def llRot2Angle(r):
-    return f32(2.0 * math.acos(max(-1.0, min(1.0, r[3]))))
+    return f32(2.0 * math.acos(_clamp1(r[3])))
 
 
 def llRot2Fwd(r):
-    from .values import vec_rotate
     return vec_rotate(Vector(1.0, 0.0, 0.0), r)
 
 
 def llRot2Left(r):
-    from .values import vec_rotate
     return vec_rotate(Vector(0.0, 1.0, 0.0), r)
 
 
 def llRot2Up(r):
-    from .values import vec_rotate
     return vec_rotate(Vector(0.0, 0.0, 1.0), r)
 
 
 def llAngleBetween(a, b):
     dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
-    return f32(2.0 * math.acos(max(-1.0, min(1.0, abs(dot)))))
+    return f32(2.0 * math.acos(_clamp1(abs(dot))))
 
 
 def llRotBetween(a, b):

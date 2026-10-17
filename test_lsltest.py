@@ -228,7 +228,7 @@ class SimulatorTest(LslTestCase):
         self.sim.start()
         self.sim.touch()
         dialog = self.assertDialog(buttons=["A", "B"])
-        self.assertEqual(dialog["channel"], -77)
+        self.assertEqual(dialog.channel, -77)
         self.sim.dialog_reply(self.sim.owner, "B")
         self.assertOwnerSaid("picked B")
 
@@ -274,7 +274,7 @@ class SimulatorTest(LslTestCase):
             }
         """)
         self.sim.start()
-        request = self.assertHttpRequest(url_contains="example.invalid", method="POST")
+        request = self.assertHttpOut(url_contains="example.invalid", method="POST")
         self.assertEqual(request.body, "{}")
         self.sim.http_respond(200, '{"ok": "yes"}')
         self.assertOwnerSaid("200 yes")
@@ -343,6 +343,114 @@ class SimulatorTest(LslTestCase):
         self.sim.start()
         self.sim.touch()
         self.assertEqual([c.text for c in self.sim.chat], ["start 1", "start 1"])
+
+    def test_chat_assertions_ignore_the_test_own_input(self):
+        self.load("""
+            default {
+                state_entry() { llListen(0, "", NULL_KEY, ""); }
+                listen(integer c, string n, key id, string m) { llOwnerSay("heard " + m); }
+            }
+        """)
+        self.sim.start()
+        self.sim.say(self.sim.owner, 0, "hello")
+        self.assertOwnerSaid("heard hello")
+        self.assertNotSaid("hello")                 # the avatar said it, no script did
+        with self.assertRaises(AssertionError):
+            self.assertSaid("hello")
+        with self.assertRaises(AssertionError):
+            self.assertSaid("heard hello")          # llOwnerSay is not public chat
+
+    def test_recursion_dies_with_stack_heap_collision(self):
+        self.load("""
+            integer down(integer n) { return down(n + 1); }
+            default { state_entry() { llOwnerSay((string)down(0)); } }
+        """)
+        self.sim.start()
+        self.assertError("Stack-Heap Collision")
+        self.load("""
+            integer depth(integer n) { if (n == 0) return 0; return 1 + depth(n - 1); }
+            default { state_entry() { llOwnerSay((string)depth(100)); } }
+        """, name="shallow")
+        self.sim.errors = []
+        self.sim.start()
+        self.assertOwnerSaid("100", exact=True)
+
+    def test_values_cannot_grow_without_bound(self):
+        self.load("""
+            string s = "x";
+            default { state_entry() { integer i; for (i = 0; i < 40; i++) s += s; llOwnerSay("done"); } }
+        """)
+        self.sim.start()
+        self.assertError("Stack-Heap Collision")
+
+    def test_timers_are_rounded_up_to_a_frame_and_runaway_ticks_are_refused(self):
+        script = self.load("""
+            integer n;
+            default { state_entry() { llSetTimerEvent(0.000001); } timer() { n++; } }
+        """)
+        self.sim.start()
+        self.sim.tick(1.0)
+        self.assertLess(script.globals["n"], 50)
+        with self.assertRaises(RuntimeError):
+            self.sim.tick(5000.0)
+
+    def test_linkset_find_keys_refuses_catastrophic_patterns(self):
+        self.load("""
+            default { state_entry() {
+                llLinksetDataWrite("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!", "1");
+                llOwnerSay((string)llLinksetDataCountFound("^(a+)+$"));
+                llOwnerSay((string)llLinksetDataCountFound("^a+!$"));
+            } }
+        """)
+        self.sim.start()
+        self.assertEqual(self._lines(kinds=("ownersay",)), ["0", "1"])
+
+    def test_missing_script_file_is_an_error(self):
+        with self.assertRaises(FileNotFoundError):
+            self.load("no_such_file.lsl")
+
+    def test_deeply_nested_expression_is_a_syntax_error_not_a_crash(self):
+        from lsltest import LslSyntaxError
+        source = "default { state_entry() { integer x = %s1%s; } }" % ("(" * 20000, ")" * 20000)
+        with self.assertRaises(LslSyntaxError):
+            parse(source)
+
+    def test_every_handler_and_pure_builtin_names_a_real_builtin(self):
+        import inspect
+        from lsltest import pure
+        from lsltest.signatures import SIGNATURES
+        handlers = [n for n, _ in inspect.getmembers(Simulator, inspect.isfunction) if n.startswith("ll_")]
+        self.assertTrue(handlers)
+        self.assertEqual([n for n in handlers if "ll" + n[3:] not in SIGNATURES], [])
+        self.assertEqual([n for n in pure.PURE if n not in SIGNATURES], [])
+
+    def test_constants_come_from_builtins_txt(self):
+        self.assertEqual(run_expr("EOF == \"\\n\\n\\n\""), "1")
+        self.assertEqual(run_expr("JSON_INVALID"), "\ufdd0")
+        self.assertIs(self.sim.constants, __import__("lsltest.signatures", fromlist=["CONSTANTS"]).CONSTANTS)
+
+
+class CliTest(unittest.TestCase):
+    def test_exit_codes(self):
+        import io
+        import os
+        import tempfile
+        from contextlib import redirect_stderr, redirect_stdout
+        from lsltest.__main__ import main
+        with tempfile.TemporaryDirectory() as folder:
+            bad = os.path.join(folder, "bad.lsl")
+            with open(bad, "w") as handle:
+                handle.write("default { state_entry() { integer x = ; } }")
+            good = os.path.join(folder, "good.lsl")
+            with open(good, "w") as handle:
+                handle.write("default { state_entry() { llOwnerSay(\"\\x1b[31mred\"); } }")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(main([os.path.join(folder, "missing.lsl")]), 2)
+                self.assertEqual(main([bad]), 2)
+                self.assertEqual(main([folder]), 1)            # no test_*.py there
+                self.assertEqual(main([good]), 0)
+            self.assertNotIn("\x1b", out.getvalue())           # control characters are escaped
 
 
 if __name__ == "__main__":

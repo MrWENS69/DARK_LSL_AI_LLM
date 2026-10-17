@@ -12,25 +12,41 @@ import random
 import re
 import time as _time
 import uuid
+from types import SimpleNamespace
 
-from . import builtins as pure
+from . import pure
+from ._version import __version__
 from .errors import ScriptError, UnsupportedError
-from .interp import Script, ReturnSignal, StateChangeSignal, JumpSignal
-from .lexer import unescape, to_int32
-from .values import (Key, Vector, Rotation, f32, cast, coerce, default_value, to_string, type_of, truthy,
+from .interp import Script
+from .signatures import CONSTANTS, SIGNATURES
+from .values import (Key, Vector, Rotation, f32, coerce, default_value, to_string, to_int32,
                      ZERO_VECTOR, ZERO_ROTATION, NULL_KEY, is_valid_key)
 
-EOF = "\n\n\n"
-NAK = "\n\x15\n"
-INVENTORY_NOTECARD = 7
-INVENTORY_SCRIPT = 10
-INVENTORY_OBJECT = 6
-INVENTORY_NONE = -1
-URL_REQUEST_GRANTED = "URL_REQUEST_GRANTED"
-URL_REQUEST_DENIED = "URL_REQUEST_DENIED"
-MAX_LISTENS = 65
-MAX_QUEUE = 64
-LINKSET_DATA_SIZE = 131072
+# LSL constants come from builtins.txt through signatures.py: the handlers below name the ones they need.
+EOF = CONSTANTS["EOF"]
+NAK = CONSTANTS["NAK"]
+INVENTORY_NOTECARD = CONSTANTS["INVENTORY_NOTECARD"]
+INVENTORY_SCRIPT = CONSTANTS["INVENTORY_SCRIPT"]
+INVENTORY_OBJECT = CONSTANTS["INVENTORY_OBJECT"]
+INVENTORY_NONE = CONSTANTS["INVENTORY_NONE"]
+URL_REQUEST_GRANTED = CONSTANTS["URL_REQUEST_GRANTED"]
+HTTP_METHOD = CONSTANTS["HTTP_METHOD"]
+AGENT, ACTIVE, PASSIVE, SCRIPTED = (CONSTANTS[n] for n in ("AGENT", "ACTIVE", "PASSIVE", "SCRIPTED"))
+LINK_SET, LINK_ALL_OTHERS, LINK_ALL_CHILDREN, LINK_THIS = (
+    CONSTANTS[n] for n in ("LINK_SET", "LINK_ALL_OTHERS", "LINK_ALL_CHILDREN", "LINK_THIS"))
+_CONTENT_TYPES = {CONSTANTS[name]: mime for name, mime in (
+    ("CONTENT_TYPE_TEXT", "text/plain"), ("CONTENT_TYPE_HTML", "text/html"), ("CONTENT_TYPE_XML", "application/xml"),
+    ("CONTENT_TYPE_XHTML", "application/xhtml+xml"), ("CONTENT_TYPE_ATOM", "application/atom+xml"),
+    ("CONTENT_TYPE_JSON", "application/json"), ("CONTENT_TYPE_LLSD", "application/llsd+xml"),
+    ("CONTENT_TYPE_FORM", "application/x-www-form-urlencoded"), ("CONTENT_TYPE_RSS", "application/rss+xml"))
+    if name in CONSTANTS}
+
+# Grid limits that are not LSL constants.
+MAX_LISTENS = 65              # llListen handles per script before "Too Many Listens"
+LINKSET_DATA_SIZE = 131072    # bytes of linkset data per object
+MIN_TIMER = 0.022             # one simulator frame: shorter timers and sensor rates are rounded up to it
+MAX_TICK_STEPS = 100000       # timer firings a single tick() may run before it is declared a runaway
+MAX_PATTERN_LEN = 256         # llLinksetDataFindKeys patterns longer than this match nothing
 
 
 class ResetSignal(Exception):
@@ -86,7 +102,9 @@ class Chat(object):
         self.speaker = speaker
         self.speaker_name = speaker_name
         self.text = text
-        self.kind = kind                      # say, whisper, shout, regionsay, regionsayto, ownersay, im, email
+        # kind: what produced the line. Scripts: say, whisper, shout, regionsay, regionsayto, ownersay, im, debug
+        # (the grid's DEBUG_CHANNEL). Test code: avatar (sim.say). assertSaid only looks at script chat kinds.
+        self.kind = kind
         self.target = target
         self.time = when
 
@@ -94,44 +112,49 @@ class Chat(object):
         return "Chat(%d, %s, %r, %s)" % (self.channel, self.speaker_name, self.text, self.kind)
 
 
-class HttpRequest(object):
-    def __init__(self, key, script, url, method, body, params):
+class HttpOutRequest(object):
+    """One llHTTPRequest the script sent. `response` is (status, body) once answered."""
+    __slots__ = ("key", "script", "url", "method", "body", "params", "response", "time")
+
+    def __init__(self, key, script, url, method, body, params, when):
         self.key = key
         self.script = script
         self.url = url
         self.method = method
         self.body = body
         self.params = params
-        self.response = None                  # (status, body) once answered
+        self.response = None
+        self.time = when
 
     def __repr__(self):
-        return "HttpRequest(%s %s, %d bytes)" % (self.method, self.url, len(self.body))
+        return "HttpOutRequest(%s %s, %d bytes)" % (self.method, self.url, len(self.body))
 
 
 class Simulator(object):
-    def __init__(self, seed=42, region_name="Test Region", strict=False, builtins_file=None):
-        self.time = 0.0
-        self.epoch = 1700000000
+    def __init__(self, seed=42, region_name="Test Region", strict=False):
+        self.time = 0.0                       # simulated seconds since the simulator was created
+        self.epoch = 1700000000               # llGetUnixTime at time 0
         self.rng = random.Random(seed)
         self.region_name = region_name
-        self.sim_version = "lsltest 0.1.0"
-        self.strict = strict
-        self.avatars = {}
-        self.objects = []
-        self.chat = []
-        self.dialogs = []
-        self.textboxes = []
-        self.http_requests = []
-        self.http_handler = None              # callable(HttpRequest) -> (status, body) or None
+        self.sim_version = "lsltest " + __version__
+        self.strict = strict                  # True: an unmodelled builtin raises instead of being recorded
+        self.avatars = {}                     # key -> Avatar
+        self.objects = []                     # SimObject, objects[0] is the default one
+        self.chat = []                        # Chat, everything said by scripts and avatars
+        self.dialogs = []                     # SimpleNamespace(avatar, text, buttons, channel, object, script, time)
+        self.textboxes = []                   # SimpleNamespace(avatar, text, channel, object, script, time)
+        self.http_out = []                    # HttpOutRequest, every llHTTPRequest in order
+        self.http_handler = None              # callable(HttpOutRequest) -> (status, body) or None, answers during run()
         self.http_in = {}                     # url -> script
         self.http_in_pending = {}             # request key -> dict(status, body, content_type, headers)
-        self.link_messages = []
-        self.calls = []                       # (script name, builtin, args) for recorded builtins
+        self.link_messages = []               # SimpleNamespace(sender, link, num, str, id, time)
+        self.calls = []                       # (script name, builtin, args) for unmodelled builtins
         self.errors = []                      # (script name, ScriptError)
-        self.emails = []
+        self.emails = []                      # SimpleNamespace(to, subject, body, sender)
         self.permission_policy = True         # True grants everything, False refuses, or callable(avatar, mask) -> mask
-        self.constants, self.signatures = load_builtins(builtins_file)
-        self.owner = self.avatar("Test Owner")
+        self.constants = CONSTANTS            # LSL constants by name, from builtins.txt
+        self.signatures = SIGNATURES          # builtin name -> (return type, [parameter types])
+        self.owner = self.avatar("Test Owner")   # owner of every object rezzed without an explicit owner
 
     # --- world setup -------------------------------------------------------
 
@@ -150,8 +173,10 @@ class Simulator(object):
         return obj
 
     def load(self, source, name=None, obj=None):
-        """Attach a script (path or source text) to an object (the default one when None)."""
-        if os.path.exists(source) and source.lower().endswith(".lsl"):
+        """Attach a script to an object (the default one when None). source: path of a .lsl file, or LSL text."""
+        if "{" not in source and source.lower().endswith(".lsl"):
+            if not os.path.isfile(source):
+                raise FileNotFoundError("no such script: %s" % source)
             with open(source, "r", encoding="utf-8") as handle:
                 text = handle.read()
             name = name or os.path.splitext(os.path.basename(source))[0]
@@ -161,7 +186,6 @@ class Simulator(object):
         if obj is None:
             obj = self.objects[0] if self.objects else self.rez()
         script = Script(self, obj, text, name)
-        script.link = 1
         obj.scripts.append(script)
         obj.inventory[name] = (INVENTORY_SCRIPT, text)
         return script
@@ -212,19 +236,28 @@ class Simulator(object):
     def tick(self, seconds):
         """Advance the clock, firing timers and repeating sensors on the way, then drain the queues."""
         end = self.time + float(seconds)
+        steps = 0
         while True:
-            due = None
-            for script in self.all_scripts():
-                for when in (script.timer_due, script.sensor_repeat and script.sensor_repeat["due"]):
-                    if when is not None and (due is None or when < due):
-                        due = when
+            due = self._next_due()
             if due is None or due > end:
                 break
+            steps += 1
+            if steps > MAX_TICK_STEPS:
+                raise RuntimeError("tick(%s) fired %d timers before reaching the end: the timer is too short for this tick"
+                                   % (seconds, MAX_TICK_STEPS))
             self.time = max(self.time, due)
             self.fire_due()
             self.run()
         self.time = end
         self.run()
+
+    def _next_due(self):
+        due = None
+        for script in self.all_scripts():
+            for when in (script.timer_due, script.sensor_repeat and script.sensor_repeat.due):
+                if when is not None and (due is None or when < due):
+                    due = when
+        return due
 
     def fire_due(self):
         for script in self.all_scripts():
@@ -232,9 +265,9 @@ class Simulator(object):
                 script.post("timer", [])
                 script.timer_due = self.time + script.timer_interval
             rep = script.sensor_repeat
-            if rep is not None and rep["due"] <= self.time:
-                self.deliver_sensor(script, rep["name"], rep["id"], rep["type"], rep["range"], rep["arc"])
-                rep["due"] = self.time + rep["rate"]
+            if rep is not None and rep.due <= self.time:
+                self.deliver_sensor(script, rep.name, rep.id, rep.type, rep.range, rep.arc)
+                rep.due = self.time + rep.rate
 
     def record_error(self, script, err):
         self.errors.append((script.name, err))
@@ -248,131 +281,109 @@ class Simulator(object):
         return {"key": obj.key, "name": obj.name, "owner": obj.owner, "pos": obj.pos, "rot": obj.rot,
                 "group": obj.group, "type": 4, "vel": ZERO_VECTOR}
 
-    def touch(self, avatar=None, obj=None, run=True):
-        """Touch an object: touch_start, touch, touch_end with one detected avatar."""
-        avatar = avatar or self.owner
+    def _inject(self, obj, events, args, detected=None):
+        """Post the same event(s) to every script of obj (the default object when None), then run."""
         obj = obj or self.objects[0]
-        det = [self.detected_record(avatar=avatar)]
         for script in obj.scripts:
-            for event in ("touch_start", "touch", "touch_end"):
-                script.post(event, [1], det)
-        if run:
-            self.run()
+            for event in events:
+                script.post(event, args, detected)
+        self.run()
 
-    def collision(self, avatar=None, obj=None, run=True):
-        obj = obj or self.objects[0]
+    def touch(self, avatar=None, obj=None):
+        """Touch an object: touch_start, touch, touch_end with one detected avatar (the owner by default)."""
         det = [self.detected_record(avatar=avatar or self.owner)]
-        for script in obj.scripts:
-            for event in ("collision_start", "collision", "collision_end"):
-                script.post(event, [1], det)
-        if run:
-            self.run()
+        self._inject(obj, ("touch_start", "touch", "touch_end"), [1], det)
 
-    def say(self, avatar, channel, text, run=True):
+    def collision(self, avatar=None, obj=None):
+        det = [self.detected_record(avatar=avatar or self.owner)]
+        self._inject(obj, ("collision_start", "collision", "collision_end"), [1], det)
+
+    def say(self, avatar, channel, text):
         """An avatar speaks on a channel; listening scripts receive listen()."""
         self.chat.append(Chat(channel, avatar.key, avatar.name, text, "avatar", None, self.time))
         self.deliver_chat(channel, avatar.key, avatar.name, text, source_obj=None, target=None)
-        if run:
-            self.run()
+        self.run()
 
-    def dialog_reply(self, avatar, button, run=True):
+    def dialog_reply(self, avatar, button):
         """Answer the latest dialog shown to this avatar by clicking a button (or typing free text)."""
         for dialog in reversed(self.dialogs):
-            if dialog["avatar"] == avatar.key:
-                self.say(avatar, dialog["channel"], button, run)
+            if dialog.avatar == avatar.key:
+                self.say(avatar, dialog.channel, button)
                 return dialog
         raise AssertionError("no dialog was shown to %s" % avatar.name)
 
-    def textbox_reply(self, avatar, text, run=True):
+    def textbox_reply(self, avatar, text):
         for box in reversed(self.textboxes):
-            if box["avatar"] == avatar.key:
-                self.say(avatar, box["channel"], text, run)
+            if box.avatar == avatar.key:
+                self.say(avatar, box.channel, text)
                 return box
         raise AssertionError("no textbox was shown to %s" % avatar.name)
 
-    def changed(self, flags, obj=None, run=True):
-        obj = obj or self.objects[0]
-        for script in obj.scripts:
-            script.post("changed", [flags])
-        if run:
-            self.run()
+    def changed(self, flags, obj=None):
+        self._inject(obj, ("changed",), [flags])
 
-    def on_rez(self, start_param=0, obj=None, run=True):
+    def on_rez(self, start_param=0, obj=None):
         obj = obj or self.objects[0]
         obj.start_param = start_param
         for script in obj.scripts:
             script.start_param = start_param
-            script.post("on_rez", [start_param])
-        if run:
-            self.run()
+        self._inject(obj, ("on_rez",), [start_param])
 
-    def attach(self, avatar=None, obj=None, point=31, run=True):
+    def attach(self, avatar=None, obj=None, point=31):
         avatar = avatar or self.owner
         obj = obj or self.objects[0]
         obj.attached = point
         obj.wearer = avatar
         obj.owner = avatar.key
         avatar.attachments.append(obj)
-        for script in obj.scripts:
-            script.post("attach", [avatar.key])
-        if run:
-            self.run()
+        self._inject(obj, ("attach",), [avatar.key])
 
-    def detach(self, obj=None, run=True):
+    def detach(self, obj=None):
         obj = obj or self.objects[0]
         if obj.wearer and obj in obj.wearer.attachments:
             obj.wearer.attachments.remove(obj)
         obj.attached = 0
         obj.wearer = None
-        for script in obj.scripts:
-            script.post("attach", [NULL_KEY])
-        if run:
-            self.run()
+        self._inject(obj, ("attach",), [NULL_KEY])
 
-    def link_message(self, num, text, id_=NULL_KEY, obj=None, sender=1, run=True):
-        obj = obj or self.objects[0]
-        for script in obj.scripts:
-            script.post("link_message", [sender, num, text, Key(id_)])
-        if run:
-            self.run()
+    def link_message(self, num, text, id_=NULL_KEY, obj=None, sender=1):
+        self._inject(obj, ("link_message",), [sender, num, text, Key(id_)])
 
-    def money(self, avatar, amount, obj=None, run=True):
-        obj = obj or self.objects[0]
-        for script in obj.scripts:
-            script.post("money", [avatar.key, amount])
-        if run:
-            self.run()
+    def money(self, avatar, amount, obj=None):
+        self._inject(obj, ("money",), [avatar.key, amount])
 
-    def reset(self, script, run=True):
+    def reset(self, script):
         script.reset()
-        if run:
-            self.run()
+        self.run()
 
-    def http_respond(self, status=200, body="", request=None, headers=None, run=True):
-        """Answer a pending llHTTPRequest (the oldest unanswered one by default)."""
-        if request is None:
-            pending = [r for r in self.http_requests if r.response is None]
-            if not pending:
-                raise AssertionError("no pending HTTP request")
-            request = pending[0]
+    def _answer(self, request, status, body, headers=None):
         request.response = (status, body)
         metadata = [0, "text/plain;charset=utf-8"] + list(headers or [])
         request.script.post("http_response", [request.key, status, metadata, body])
-        if run:
-            self.run()
+
+    def http_respond(self, status=200, body="", request=None, headers=None):
+        """Answer a pending llHTTPRequest (the oldest unanswered one by default), then run."""
+        if request is None:
+            pending = [r for r in self.http_out if r.response is None]
+            if not pending:
+                raise AssertionError("no pending HTTP request")
+            request = pending[0]
+        self._answer(request, status, body, headers)
+        self.run()
 
     def auto_respond(self):
+        """Called by run(): hand every unanswered request to http_handler. Returns how many it answered."""
         count = 0
-        for request in [r for r in self.http_requests if r.response is None]:
+        for request in [r for r in self.http_out if r.response is None]:
             answer = self.http_handler(request)
             if answer is None:
                 continue
             status, body = answer
-            self.http_respond(status, body, request, run=False)
+            self._answer(request, status, body)
             count += 1
         return count
 
-    def http_in_request(self, url, method="GET", body="", headers=None, run=True):
+    def http_in_request(self, url, method="GET", body="", headers=None):
         """Send a request to a script's HTTP-in URL; returns (status, body, content_type)."""
         base = url.split("?", 1)[0]
         script = None
@@ -393,8 +404,7 @@ class Simulator(object):
         request_headers.setdefault("user-agent", "lsltest")
         self.http_in_pending[key] = {"status": None, "body": "", "content_type": "text/plain", "headers": request_headers}
         script.post("http_request", [key, method, body[:2048]])
-        if run:
-            self.run()
+        self.run()
         answer = self.http_in_pending.pop(key)
         if answer["status"] is None:
             return (500, "the script did not answer", "text/plain")
@@ -413,17 +423,17 @@ class Simulator(object):
     def deliver_sensor(self, script, name, id_, kind, range_, arc):
         found = []
         here = script.obj.pos
-        if kind & 1:      # AGENT
+        if kind & AGENT:
             for av in self.avatars.values():
-                if av.key == script.obj.wearer.key if script.obj.wearer else False:
-                    continue
+                if script.obj.wearer is not None and av.key == script.obj.wearer.key:
+                    continue          # an attachment never detects its wearer
                 if pure.llVecDist(here, av.pos) <= range_:
                     if name and av.name != name:
                         continue
                     if is_valid_key(id_) and id_ != NULL_KEY and av.key != id_:
                         continue
                     found.append(self.detected_record(avatar=av))
-        if kind & (2 | 4 | 8):   # ACTIVE | PASSIVE | SCRIPTED objects
+        if kind & (ACTIVE | PASSIVE | SCRIPTED):
             for obj in self.objects:
                 if obj is script.obj or not obj.alive or obj.attached:
                     continue
@@ -451,13 +461,13 @@ class Simulator(object):
                     if script.obj.wearer is None or script.obj.wearer.key != target:
                         continue
             for listen in script.listens.values():
-                if not listen["active"] or listen["channel"] != channel:
+                if not listen.active or listen.channel != channel:
                     continue
-                if listen["name"] and listen["name"] != speaker_name:
+                if listen.name and listen.name != speaker_name:
                     continue
-                if listen["id"] and listen["id"] != speaker_key:
+                if listen.id and listen.id != speaker_key:
                     continue
-                if listen["msg"] and listen["msg"] != text:
+                if listen.msg and listen.msg != text:
                     continue
                 script.post("listen", [channel, speaker_name, Key(speaker_key), text])
                 break
@@ -526,7 +536,7 @@ class Simulator(object):
         self.time += 2.0
 
     def ll_Email(self, script, address, subject, message):
-        self.emails.append({"to": address, "subject": subject, "body": message, "from": script.obj.key})
+        self.emails.append(SimpleNamespace(to=address, subject=subject, body=message, sender=script.obj.key))
         self.time += 20.0
 
     # --- listens ---------------------------------------------------------------
@@ -534,13 +544,13 @@ class Simulator(object):
     def ll_Listen(self, script, channel, name, id_, msg):
         if len(script.listens) >= MAX_LISTENS:
             raise ScriptError("Too Many Listens")
+        wanted = (channel, name, id_ if is_valid_key(id_) and id_ != NULL_KEY else "", msg)
         for handle, listen in script.listens.items():
-            if (listen["channel"], listen["name"], listen["id"], listen["msg"]) == (channel, name, id_ if is_valid_key(id_) and id_ != NULL_KEY else "", msg):
+            if (listen.channel, listen.name, listen.id, listen.msg) == wanted:
                 return handle
         handle = script.next_listen
         script.next_listen += 1
-        script.listens[handle] = {"channel": channel, "name": name, "id": id_ if is_valid_key(id_) and id_ != NULL_KEY else "",
-                                  "msg": msg, "active": True}
+        script.listens[handle] = SimpleNamespace(channel=wanted[0], name=wanted[1], id=wanted[2], msg=wanted[3], active=True)
         return handle
 
     def ll_ListenRemove(self, script, handle):
@@ -548,7 +558,7 @@ class Simulator(object):
 
     def ll_ListenControl(self, script, handle, active):
         if handle in script.listens:
-            script.listens[handle]["active"] = bool(active)
+            script.listens[handle].active = bool(active)
 
     # --- dialogs -------------------------------------------------------------
 
@@ -564,13 +574,13 @@ class Simulator(object):
         for label in labels:
             if label == "" or len(label.encode("utf-8")) > 24:
                 raise ScriptError("Script run-time error", "llDialog: button label must be 1 to 24 bytes: %r" % label)
-        self.dialogs.append({"avatar": avatar, "text": message, "buttons": labels, "channel": channel,
-                             "object": script.obj.key, "script": script.name, "time": self.time})
+        self.dialogs.append(SimpleNamespace(avatar=avatar, text=message, buttons=labels, channel=channel,
+                                            object=script.obj.key, script=script.name, time=self.time))
         self.time += 1.0
 
     def ll_TextBox(self, script, avatar, message, channel):
-        self.textboxes.append({"avatar": avatar, "text": message, "channel": channel, "object": script.obj.key,
-                               "script": script.name, "time": self.time})
+        self.textboxes.append(SimpleNamespace(avatar=avatar, text=message, channel=channel, object=script.obj.key,
+                                              script=script.name, time=self.time))
         self.time += 1.0
 
     # --- timers and time ---------------------------------------------------
@@ -580,8 +590,8 @@ class Simulator(object):
             script.timer_interval = 0.0
             script.timer_due = None
         else:
-            script.timer_interval = seconds
-            script.timer_due = self.time + seconds
+            script.timer_interval = max(seconds, MIN_TIMER)
+            script.timer_due = self.time + script.timer_interval
 
     def ll_Sleep(self, script, seconds):
         if seconds > 0:
@@ -608,11 +618,10 @@ class Simulator(object):
     def ll_GetWallclock(self, script):
         return f32((self.epoch + self.time) % 86400)
 
+    ll_GetGMTclock = ll_GetWallclock
+
     def ll_GetDate(self, script):
         return _time.strftime("%Y-%m-%d", _time.gmtime(self.epoch + self.time))
-
-    def ll_GetGMTclock(self, script):
-        return f32((self.epoch + self.time) % 86400)
 
     # --- script control ----------------------------------------------------
 
@@ -691,11 +700,7 @@ class Simulator(object):
         script.obj.pos = pos
         self.time += 0.2
 
-    def ll_GetLocalPos(self, script):
-        return script.obj.pos
-
-    def ll_GetRootPosition(self, script):
-        return script.obj.pos
+    ll_GetLocalPos = ll_GetRootPosition = ll_GetPos
 
     def ll_GetRot(self, script):
         return script.obj.rot
@@ -704,11 +709,7 @@ class Simulator(object):
         script.obj.rot = rot
         self.time += 0.2
 
-    def ll_GetLocalRot(self, script):
-        return script.obj.rot
-
-    def ll_GetRootRotation(self, script):
-        return script.obj.rot
+    ll_GetLocalRot = ll_GetRootRotation = ll_GetRot
 
     def ll_SetLocalRot(self, script, rot):
         script.obj.rot = rot
@@ -919,18 +920,16 @@ class Simulator(object):
     # --- HTTP out -------------------------------------------------------------
 
     def ll_HTTPRequest(self, script, url, params, body):
-        recent = [r for r in self.http_requests if r.script.obj is script.obj and r.key != NULL_KEY and self.time - getattr(r, "time", self.time) < 20.0]
+        # the grid throttles an object to 25 requests per 20 seconds and returns NULL_KEY beyond that
+        recent = [r for r in self.http_out if r.script.obj is script.obj and self.time - r.time < 20.0]
         if len(recent) >= 25:
             return NULL_KEY
         method = "GET"
         for i in range(0, len(params) - 1, 2):
-            if params[i] == 0:        # HTTP_METHOD
+            if params[i] == HTTP_METHOD:
                 method = to_string(params[i + 1])
         key = self.new_key()
-        request = HttpRequest(key, script, url, method, body, list(params))
-        request.time = self.time
-        self.http_requests.append(request)
-        script.http_requests.add(key)
+        self.http_out.append(HttpOutRequest(key, script, url, method, body, list(params), self.time))
         return key
 
     # --- HTTP in --------------------------------------------------------------
@@ -941,8 +940,7 @@ class Simulator(object):
         script.post("http_request", [key, URL_REQUEST_GRANTED, url])
         return key
 
-    def ll_RequestSecureURL(self, script):
-        return self.ll_RequestURL(script)
+    ll_RequestSecureURL = ll_RequestURL
 
     def ll_ReleaseURL(self, script, url):
         self.release_url(script, url)
@@ -959,12 +957,7 @@ class Simulator(object):
     def ll_SetContentType(self, script, request_id, content_type):
         pending = self.http_in_pending.get(request_id)
         if pending is not None:
-            names = {"CONTENT_TYPE_TEXT": "text/plain", "CONTENT_TYPE_HTML": "text/html", "CONTENT_TYPE_XML": "application/xml",
-                     "CONTENT_TYPE_XHTML": "application/xhtml+xml", "CONTENT_TYPE_ATOM": "application/atom+xml",
-                     "CONTENT_TYPE_JSON": "application/json", "CONTENT_TYPE_LLSD": "application/llsd+xml",
-                     "CONTENT_TYPE_FORM": "application/x-www-form-urlencoded", "CONTENT_TYPE_RSS": "application/rss+xml"}
-            by_value = {self.constants.get(name): mime for name, mime in names.items() if name in self.constants}
-            pending["content_type"] = by_value.get(content_type, "text/plain")
+            pending["content_type"] = _CONTENT_TYPES.get(content_type, "text/plain")
 
     def ll_GetHTTPHeader(self, script, request_id, header):
         pending = self.http_in_pending.get(request_id)
@@ -975,15 +968,14 @@ class Simulator(object):
     # --- link messages ---------------------------------------------------------
 
     def ll_MessageLinked(self, script, link, num, text, id_):
-        self.link_messages.append({"from": script.name, "link": link, "num": num, "str": text, "id": id_, "time": self.time})
+        self.link_messages.append(SimpleNamespace(sender=script.name, link=link, num=num, str=text, id=id_, time=self.time))
         for other in script.obj.scripts:
-            target_link = other.link
             deliver = (
-                link == -1                                          # LINK_SET
-                or (link == -2 and other is not script)             # LINK_ALL_OTHERS (single prim: other scripts)
-                or (link == -3 and target_link > 1)                 # LINK_ALL_CHILDREN
-                or (link == -4 and other.obj is script.obj)         # LINK_THIS
-                or (link > 0 and link == target_link)
+                link == LINK_SET
+                or (link == LINK_ALL_OTHERS and other is not script)     # single prim: the other scripts
+                or (link == LINK_ALL_CHILDREN and other.link > 1)
+                or (link == LINK_THIS and other.obj is script.obj)
+                or (link > 0 and link == other.link)
             )
             if deliver:
                 other.post("link_message", [script.link, num, text, Key(id_)])
@@ -1032,8 +1024,9 @@ class Simulator(object):
         if rate <= 0:
             script.sensor_repeat = None
             return
-        script.sensor_repeat = {"name": name, "id": id_, "type": kind, "range": range_, "arc": arc,
-                                "rate": rate, "due": self.time + rate}
+        rate = max(rate, MIN_TIMER)
+        script.sensor_repeat = SimpleNamespace(name=name, id=id_, type=kind, range=range_, arc=arc,
+                                               rate=rate, due=self.time + rate)
 
     def ll_SensorRemove(self, script):
         script.sensor_repeat = None
@@ -1121,6 +1114,10 @@ class Simulator(object):
         return keys[start:start + count]
 
     def ll_LinksetDataFindKeys(self, script, pattern, start, count):
+        # A pattern that nests a quantifier inside a quantified group can take exponential time in Python's
+        # backtracking engine (the grid uses a different one); such patterns match nothing here.
+        if len(pattern) > MAX_PATTERN_LEN or re.search(r"\([^()]*[*+][^()]*\)[*+{]", pattern):
+            return []
         try:
             rx = re.compile(pattern)
         except re.error:
@@ -1173,69 +1170,4 @@ class Simulator(object):
             script.post("object_rez", [Key(child.key)])
         self.time += 0.1
 
-    def ll_RezAtRoot(self, script, inventory, pos, vel, rot, param):
-        self.ll_RezObject(script, inventory, pos, vel, rot, param)
-
-
-# --- builtins.txt --------------------------------------------------------------
-
-def _data_file(builtins_file):
-    if builtins_file:
-        return builtins_file
-    here = os.path.dirname(os.path.abspath(__file__))
-    for candidate in (os.path.join(here, "data", "builtins.txt"), os.path.join(os.path.dirname(here), "builtins.txt")):
-        if os.path.isfile(candidate):
-            return candidate
-    raise UnsupportedError("builtins.txt not found next to lsltest")
-
-
-_const_cache = {}
-
-
-def load_builtins(builtins_file=None):
-    """Parse builtins.txt into (constants, signatures). Cached per file."""
-    path = _data_file(builtins_file)
-    if path in _const_cache:
-        return _const_cache[path]
-    constants = {}
-    signatures = {}
-    with open(path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if not line or line.startswith("//"):
-                continue
-            m = re.match(r"const (\w+) (\w+) = (.*)$", line)
-            if m:
-                ctype, name, raw = m.groups()
-                constants[name] = _parse_constant(ctype, raw)
-                continue
-            m = re.match(r"event (\w+)\((.*)\)$", line)
-            if m:
-                continue
-            m = re.match(r"(\w+) (\w+)\((.*)\)$", line)
-            if m:
-                ret, name, params = m.groups()
-                types = [p.strip().split()[0] for p in params.split(",") if p.strip()]
-                types = ["rotation" if t == "quaternion" else t for t in types]
-                signatures[name] = ("rotation" if ret == "quaternion" else ret, types)
-    _const_cache[path] = (constants, signatures)
-    return constants, signatures
-
-
-def _parse_constant(ctype, raw):
-    raw = raw.strip()
-    if ctype == "integer":
-        return to_int32(int(raw, 0))
-    if ctype == "float":
-        return f32(float(raw))
-    if ctype == "string":
-        return unescape(raw[1:-1]) if raw.startswith('"') else raw
-    if ctype == "key":
-        return Key(raw[1:-1] if raw.startswith('"') else raw)
-    if ctype == "vector":
-        return Vector(*[float(x) for x in raw.strip("<>").split(",")])
-    if ctype in ("rotation", "quaternion"):
-        return Rotation(*[float(x) for x in raw.strip("<>").split(",")])
-    if ctype == "list":
-        return []
-    return raw
+    ll_RezAtRoot = ll_RezObject

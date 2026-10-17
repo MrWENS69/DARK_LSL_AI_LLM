@@ -62,9 +62,9 @@ class MenuTest(LslTestCase):
     def test_touch_shows_first_page_with_paging_buttons(self):
         self.sim.touch()
         dialog = self.assertDialog(contains="Pick a colour")
-        self.assertEqual(dialog["buttons"][:2], ["Back", "Next"])
-        self.assertEqual(len(dialog["buttons"]), 12)
-        self.assertListening(dialog["channel"])
+        self.assertEqual(dialog.buttons[:2], ["Back", "Next"])
+        self.assertEqual(len(dialog.buttons), 12)
+        self.assertListening(dialog.channel)
 
     def test_choice_is_announced_and_listener_closed(self):
         self.sim.touch()
@@ -76,7 +76,7 @@ class MenuTest(LslTestCase):
         self.sim.touch()
         self.sim.dialog_reply(self.sim.owner, "Next")
         dialog = self.assertDialog(contains="Pick a colour")
-        self.assertIn("Cyan", dialog["buttons"])
+        self.assertIn("Cyan", dialog.buttons)
         self.sim.dialog_reply(self.sim.owner, "Cyan")
         self.assertSaidTo(self.sim.owner, "You picked Cyan")
 
@@ -129,7 +129,7 @@ class HttpClientTest(LslTestCase):
 
     def test_touch_posts_json_and_reads_the_answer(self):
         self.sim.touch()
-        request = self.assertHttpRequest(url_contains="example.invalid/api/ping", method="POST")
+        request = self.assertHttpOut(url_contains="example.invalid/api/ping", method="POST")
         self.assertIn('"version":"1.0"', request.body)
         self.sim.http_respond(200, '{"message": "pong"}')
         self.assertOwnerSaid("API says: pong")
@@ -148,7 +148,7 @@ class HttpClientTest(LslTestCase):
     def test_one_request_in_flight(self):
         self.sim.touch()
         self.sim.touch()
-        self.assertEqual(len(self.sim.http_requests), 1)
+        self.assertEqual(len(self.sim.http_out), 1)
 
 
 class HttpServerTest(LslTestCase):

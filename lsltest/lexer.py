@@ -3,6 +3,7 @@
 import re
 
 from .errors import LslSyntaxError
+from .values import to_int32, unescape
 
 KEYWORDS = {
     "integer", "float", "string", "key", "vector", "rotation", "quaternion", "list",
@@ -20,7 +21,6 @@ _TOKEN_RE = re.compile(r"""
     (?P<ws>[ \t\r\f\v]+)
   | (?P<nl>\n)
   | (?P<comment>//[^\n]*)
-  | (?P<ccomment>/\*.*?\*/)
   | (?P<hex>0[xX][0-9a-fA-F]+)
   | (?P<float>(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[fF]?|[0-9]+[eE][+-]?[0-9]+[fF]?)
   | (?P<int>[0-9]+)
@@ -43,35 +43,6 @@ class Token(object):
         return "Token(%s, %r, %d:%d)" % (self.kind, self.value, self.line, self.col)
 
 
-def unescape(text):
-    """Compile-time escapes of LSL string literals: \\n, \\t (four spaces), \\", \\\\.
-
-    Any other backslash sequence drops the backslash, as the LSL compiler does.
-    """
-    out = []
-    i = 0
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "\\" and i + 1 < n:
-            nxt = text[i + 1]
-            if nxt == "n":
-                out.append("\n")
-            elif nxt == "t":
-                out.append("    ")
-            elif nxt == '"':
-                out.append('"')
-            elif nxt == "\\":
-                out.append("\\")
-            else:
-                out.append(nxt)
-            i += 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
-
-
 def tokenize(source):
     tokens = []
     line = 1
@@ -79,6 +50,17 @@ def tokenize(source):
     pos = 0
     length = len(source)
     while pos < length:
+        if source.startswith("/*", pos):              # block comment, scanned once, never backtracked
+            end = source.find("*/", pos + 2)
+            if end < 0:
+                raise LslSyntaxError("unterminated comment", line, pos - line_start + 1)
+            text = source[pos:end + 2]
+            newlines = text.count("\n")
+            if newlines:
+                line += newlines
+                line_start = pos + text.rfind("\n") + 1
+            pos = end + 2
+            continue
         m = _TOKEN_RE.match(source, pos)
         if not m:
             raise LslSyntaxError("unexpected character %r" % source[pos], line, pos - line_start + 1)
@@ -90,14 +72,11 @@ def tokenize(source):
         elif kind == "nl":
             line += 1
             line_start = m.end()
-        elif kind == "ccomment":
-            newlines = text.count("\n")
-            if newlines:
-                line += newlines
-                line_start = m.start() + text.rfind("\n") + 1
         elif kind == "hex":
             tokens.append(Token("int", to_int32(int(text, 16)), line, col))
         elif kind == "int":
+            if len(text) > 20:
+                raise LslSyntaxError("integer literal too long", line, col)
             tokens.append(Token("int", to_int32(int(text, 10)), line, col))
         elif kind == "float":
             tokens.append(Token("float", float(text.rstrip("fF")), line, col))
@@ -114,11 +93,3 @@ def tokenize(source):
         pos = m.end()
     tokens.append(Token("eof", None, line, pos - line_start + 1))
     return tokens
-
-
-def to_int32(value):
-    """Wrap a Python integer to a signed 32-bit integer, as LSL integers do."""
-    value &= 0xFFFFFFFF
-    if value >= 0x80000000:
-        value -= 0x100000000
-    return value

@@ -15,7 +15,7 @@ Precedence, lowest to highest, as declared in lslmini.y:
 A '<' at the start of an operand opens a vector or rotation literal.
 """
 
-from . import ast
+from . import nodes as ast
 from .errors import LslSyntaxError
 from .lexer import tokenize
 
@@ -400,6 +400,11 @@ class Parser(object):
 def parse(source):
     """Parse LSL source text into an ast.Program."""
     import sys
-    if sys.getrecursionlimit() < 20000:
-        sys.setrecursionlimit(20000)       # deeply nested expressions in the corpus
-    return Parser(source).parse_program()
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old, 5000))     # deeply nested expressions in the corpus
+    try:
+        return Parser(source).parse_program()
+    except RecursionError:
+        raise LslSyntaxError("expression or block nested too deeply", 0, 0)
+    finally:
+        sys.setrecursionlimit(old)

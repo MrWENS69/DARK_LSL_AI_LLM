@@ -16,8 +16,11 @@ jobs:
   linux:
     name: Linux build and tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install flex and bison
         run: |
           sudo apt-get update
@@ -40,8 +43,11 @@ jobs:
   macos:
     name: macOS build and tests
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install flex and bison
         run: brew install flex bison
       - name: Build
@@ -58,8 +64,11 @@ jobs:
   windows:
     name: Windows build and tests
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install winflexbison (checksum verified)
         shell: pwsh
         run: |

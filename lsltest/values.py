@@ -1,13 +1,50 @@
 """LSL values and their semantics: types, casts, formatting, truthiness, operators."""
 
 import math
-import re
 import struct
 
 from .errors import ScriptError
-from .lexer import to_int32
 
-TYPES = ("integer", "float", "string", "key", "vector", "rotation", "list")
+# Strings and lists cannot grow past this many items: the grid has 64 KiB for the
+# whole script, and an unbounded value would otherwise exhaust the test runner.
+MAX_VALUE_LEN = 65536
+
+
+def to_int32(value):
+    """Wrap a Python integer to a signed 32-bit integer, as LSL integers do."""
+    value &= 0xFFFFFFFF
+    if value >= 0x80000000:
+        value -= 0x100000000
+    return value
+
+
+def unescape(text):
+    """Compile-time escapes of LSL string literals: backslash-n, backslash-t (four
+    spaces), backslash-quote and backslash-backslash. Any other backslash sequence
+    drops the backslash, as the LSL compiler does."""
+    out = []
+    i = 0
+    n = len(text)
+    backslash = chr(92)
+    while i < n:
+        c = text[i]
+        if c == backslash and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "n":
+                out.append(chr(10))
+            elif nxt == "t":
+                out.append("    ")
+            elif nxt == '"':
+                out.append('"')
+            elif nxt == backslash:
+                out.append(backslash)
+            else:
+                out.append(nxt)
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def f32(value):
@@ -16,6 +53,13 @@ def f32(value):
         return struct.unpack("f", struct.pack("f", float(value)))[0]
     except OverflowError:
         return math.copysign(float("inf"), float(value))
+
+
+def check_size(value):
+    """Refuse a string or list over MAX_VALUE_LEN items, as "Stack-Heap Collision"."""
+    if isinstance(value, (str, list)) and len(value) > MAX_VALUE_LEN:
+        raise ScriptError("Stack-Heap Collision", "value over %d items" % MAX_VALUE_LEN)
+    return value
 
 
 class Key(str):
@@ -59,10 +103,19 @@ ZERO_VECTOR = Vector(0.0, 0.0, 0.0)
 ZERO_ROTATION = Rotation(0.0, 0.0, 0.0, 1.0)
 NULL_KEY = Key("00000000-0000-0000-0000-000000000000")
 
-_KEY_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_INT_PREFIX_RE = re.compile(r"^\s*(0[xX][0-9a-fA-F]+|[+-]?[0-9]+)")
-_FLOAT_PREFIX_RE = re.compile(r"^\s*([+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)")
-_FLOAT_HEX_RE = re.compile(r"^\s*([+-]?0[xX][0-9a-fA-F]*\.?[0-9a-fA-F]*(?:[pP][+-]?[0-9]+)?)")
+_HEX = set("0123456789abcdefABCDEF")
+
+
+def is_valid_key(value):
+    if len(value) != 36:
+        return False
+    for i, c in enumerate(value):
+        if i in (8, 13, 18, 23):
+            if c != "-":
+                return False
+        elif c not in _HEX:
+            return False
+    return True
 
 
 def type_of(value):
@@ -90,10 +143,6 @@ def default_value(type_name):
         "integer": 0, "float": 0.0, "string": "", "key": Key(""),
         "vector": ZERO_VECTOR, "rotation": ZERO_ROTATION, "list": [],
     }[type_name]
-
-
-def is_valid_key(value):
-    return bool(_KEY_RE.match(value))
 
 
 def truthy(value):
@@ -136,10 +185,52 @@ def to_string(value):
         return "<%s, %s, %s>" % tuple(format_float(c, 5) for c in value)
     if t == "rotation":
         return "<%s, %s, %s, %s>" % tuple(format_float(c, 5) for c in value)
-    return "".join(to_string(item) for item in value)
+    return check_size("".join(to_string(item) for item in value))
 
 
 # --- casts --------------------------------------------------------------------
+
+def _leading_number(text):
+    """The longest prefix of text (after whitespace) that reads as a decimal number, or ''."""
+    s = text.lstrip()
+    i = 0
+    n = len(s)
+    if i < n and s[i] in "+-":
+        i += 1
+    digits = 0
+    while i < n and s[i].isdigit():
+        i += 1
+        digits += 1
+    if i < n and s[i] == ".":
+        i += 1
+        while i < n and s[i].isdigit():
+            i += 1
+            digits += 1
+    if digits == 0:
+        return ""
+    if i < n and s[i] in "eE":
+        j = i + 1
+        if j < n and s[j] in "+-":
+            j += 1
+        if j < n and s[j].isdigit():
+            while j < n and s[j].isdigit():
+                j += 1
+            i = j
+    return s[:i]
+
+
+def _leading_hex(text):
+    s = text.lstrip()
+    sign = ""
+    if s[:1] in "+-" and len(s) > 1:
+        sign, s = s[0], s[1:]
+    if not s[:2].lower() == "0x":
+        return ""
+    i = 2
+    while i < len(s) and s[i] in _HEX:
+        i += 1
+    return sign + s[:i] if i > 2 else ""
+
 
 def to_integer(value):
     t = type_of(value)
@@ -150,12 +241,14 @@ def to_integer(value):
             return -2147483648
         return to_int32(int(value))
     if t in ("string", "key"):
-        m = _INT_PREFIX_RE.match(value)
-        if not m:
+        hx = _leading_hex(value)
+        if hx:
+            return to_int32(int(hx, 16))
+        num = _leading_number(value)
+        if not num:
             return 0
-        text = m.group(1)
         try:
-            return to_int32(int(text, 16) if text.lower().startswith("0x") else int(text, 10))
+            return to_int32(int(num.split(".")[0].split("e")[0].split("E")[0] or "0"))
         except ValueError:
             return 0
     raise ScriptError("Type mismatch", "cannot cast %s to integer" % t)
@@ -168,42 +261,46 @@ def to_float(value):
     if t == "integer":
         return f32(value)
     if t in ("string", "key"):
-        m = _FLOAT_HEX_RE.match(value)
-        if m and m.group(1).lower().lstrip("+-") not in ("0x", "0x."):
+        hx = _leading_hex(value)
+        if hx:
             try:
-                return f32(float.fromhex(m.group(1)))
-            except ValueError:
-                pass
-        m = _FLOAT_PREFIX_RE.match(value)
-        if not m:
-            stripped = value.strip().lower()
-            if stripped.startswith("nan"):
-                return float("nan")
-            if stripped.startswith("inf") or stripped.startswith("+inf"):
-                return float("inf")
-            if stripped.startswith("-inf"):
-                return float("-inf")
-            return 0.0
-        try:
-            return f32(float(m.group(1)))
-        except ValueError:
-            return 0.0
+                return f32(float.fromhex(hx))
+            except (ValueError, OverflowError):
+                return 0.0
+        num = _leading_number(value)
+        if num:
+            try:
+                return f32(float(num))
+            except (ValueError, OverflowError):
+                return 0.0
+        stripped = value.strip().lower()
+        if stripped.startswith("nan"):
+            return float("nan")
+        if stripped.startswith("inf") or stripped.startswith("+inf"):
+            return float("inf")
+        if stripped.startswith("-inf"):
+            return float("-inf")
+        return 0.0
     raise ScriptError("Type mismatch", "cannot cast %s to float" % t)
 
 
 def _parse_components(text, count):
-    m = re.match(r"^\s*<\s*(.*?)\s*>", text)
-    if not m:
+    """Read "<a, b, c>" (or four components) without a backtracking regex."""
+    s = text.lstrip()
+    if not s.startswith("<"):
         return None
-    parts = [p.strip() for p in m.group(1).split(",")]
+    end = s.find(">")
+    if end < 0:
+        return None
+    parts = [p.strip() for p in s[1:end].split(",")]
     if len(parts) < count:
         return None
     values = []
     for part in parts[:count]:
-        mm = _FLOAT_PREFIX_RE.match(part)
-        if not mm:
+        num = _leading_number(part)
+        if not num:
             return None
-        values.append(float(mm.group(1)))
+        values.append(float(num))
     return values
 
 
@@ -296,7 +393,6 @@ def vec_rotate(v, r):
     """v * r: rotate the vector by the quaternion."""
     vx, vy, vz = v
     rx, ry, rz, rs = r
-    # q * (v, 0) * conj(q), expanded
     tx = 2.0 * (ry * vz - rz * vy)
     ty = 2.0 * (rz * vx - rx * vz)
     tz = 2.0 * (rx * vy - ry * vx)
@@ -314,13 +410,13 @@ def binary(op, a, b):
 
     if op == "+":
         if ta == "list" and tb == "list":
-            return a + b
+            return check_size(a + b)
         if ta == "list":
-            return a + [b]
+            return check_size(a + [b])
         if tb == "list":
-            return [a] + b
+            return check_size([a] + b)
         if ta in ("string", "key") and tb in ("string", "key"):
-            return str(a) + str(b)
+            return check_size(str(a) + str(b))
         if ta in num and tb in num:
             return to_int32(a + b) if ta == tb == "integer" else f32(float(a) + float(b))
         if ta == "vector" and tb == "vector":
@@ -432,5 +528,5 @@ def lsl_repr(value):
     if t == "string":
         return '"%s"' % value
     if t == "key":
-        return "(key)\"%s\"" % value
+        return '(key)"%s"' % value
     return to_string(value)

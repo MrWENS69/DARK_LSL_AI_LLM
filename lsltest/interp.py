@@ -12,11 +12,11 @@ Semantics implemented here (see skills/lsl-dev/references/lsl-for-ai.md):
 - jump/labels within a function or event handler.
 """
 
-from . import ast
+from . import nodes as ast
 from .errors import ScriptError, UnsupportedError
 from .parser import parse
-from .values import (Key, Vector, Rotation, binary, cast, coerce, default_value, truthy, type_of, unary,
-                     to_int32, f32, ZERO_VECTOR, ZERO_ROTATION, NULL_KEY)
+from .signatures import CONSTANTS
+from .values import (Vector, Rotation, binary, cast, coerce, default_value, truthy, type_of, unary, f32, NULL_KEY)
 
 
 class ReturnSignal(Exception):
@@ -37,11 +37,9 @@ class StateChangeSignal(Exception):
         self.name = name
 
 
-class ScriptDied(Exception):
-    """Raised to unwind after a ScriptError has been recorded."""
-
-
-MAX_CALL_DEPTH = 150
+MAX_CALL_DEPTH = 150          # the grid dies with "Stack-Heap Collision" long before this
+MAX_QUEUE = 64                # events queued per script; more are dropped silently
+MAX_STATEMENTS = 2000000      # statements per event handler: beyond that the script is looping
 
 
 class Script(object):
@@ -58,7 +56,7 @@ class Script(object):
         self.running = True            # llSetScriptState / run-time error
         self.dead = False              # stopped by a run-time error
         self.error = None              # ScriptError that killed it
-        self.listens = {}              # handle -> dict(channel, name, id, msg, active)
+        self.listens = {}              # handle -> SimpleNamespace(channel, name, id, msg, active)
         self.next_listen = 1
         self.timer_interval = 0.0
         self.timer_due = None
@@ -71,12 +69,10 @@ class Script(object):
         self.start_time = sim.time
         self.memory_limit = 65536
         self.detected = []             # llDetected* data of the running event
-        self.current_event = None
-        self.http_requests = set()
+        self.link = 1                  # prim the script sits in
         self.urls = set()
         self.depth = 0
         self.statements_run = 0
-        self.max_statements = 2000000
         self.reset_globals()
 
     # --- lifecycle ---------------------------------------------------------
@@ -111,8 +107,8 @@ class Script(object):
     def release_listens(self):
         self.listens = {}
 
-    def handles_event(self, name, state=None):
-        state_node = self.program.states.get(state or self.state)
+    def handles_event(self, name):
+        state_node = self.program.states.get(self.state)
         return state_node is not None and name in state_node.events
 
     def post(self, name, args, detected=None):
@@ -121,20 +117,11 @@ class Script(object):
             return False
         if not self.handles_event(name):
             return False
-        if len(self.queue) >= 64:
+        if len(self.queue) >= MAX_QUEUE:
             self.dropped_events += 1
             return False
         self.queue.append((name, list(args), list(detected or [])))
         return True
-
-    def run_pending(self):
-        """Run queued events in order until the queue is empty. Returns the number run."""
-        count = 0
-        while self.queue and self.running and not self.dead:
-            name, args, detected = self.queue.pop(0)
-            self.dispatch(name, args, detected)
-            count += 1
-        return count
 
     def dispatch(self, name, args, detected):
         state_node = self.program.states[self.state]
@@ -142,15 +129,17 @@ class Script(object):
         if handler is None:
             return
         self.detected = detected
-        self.current_event = name
+        self.statements_run = 0
         try:
             self.call_function(handler, args)
         except StateChangeSignal as change:
             self.change_state(change.name)
         except ScriptError as err:
             self.die(err)
+        except (ArithmeticError, ValueError, RecursionError, MemoryError) as exc:
+            # a Python limit reached by a script value: report it as a script error, never a traceback
+            self.die(ScriptError("Script run-time error", "%s: %s" % (type(exc).__name__, exc)))
         finally:
-            self.current_event = None
             self.detected = []
 
     def die(self, err):
@@ -185,10 +174,9 @@ class Script(object):
         scope = {}
         for (ptype, pname), value in zip(func.params, args):
             scope[pname] = coerce(value, ptype)
-        self.depth += 1
-        if self.depth > MAX_CALL_DEPTH:
-            self.depth = 0
+        if self.depth >= MAX_CALL_DEPTH:
             raise ScriptError("Stack-Heap Collision", "call depth over %d" % MAX_CALL_DEPTH)
+        self.depth += 1
         try:
             self.exec_block(func.body, [scope])
         except ReturnSignal as ret:
@@ -210,7 +198,7 @@ class Script(object):
     def exec_block(self, block, scopes):
         statements = block.statements
         index = 0
-        scopes = scopes + [{}] if block is not None else scopes
+        scopes = scopes + [{}]
         while index < len(statements):
             stmt = statements[index]
             try:
@@ -231,7 +219,7 @@ class Script(object):
 
     def exec_stmt(self, stmt, scopes):
         self.statements_run += 1
-        if self.statements_run > self.max_statements:
+        if self.statements_run > MAX_STATEMENTS:
             raise ScriptError("Script run-time error", "statement budget exhausted (infinite loop?)")
         kind = type(stmt)
         if kind is ast.ExprStatement:
@@ -245,22 +233,22 @@ class Script(object):
             self.exec_block(stmt, scopes)
         elif kind is ast.If:
             if truthy(self.eval_expr(stmt.cond, scopes)):
-                self.exec_stmt(stmt.then, scopes + [{}])
+                self.exec_stmt(stmt.then, scopes)
             elif stmt.otherwise is not None:
-                self.exec_stmt(stmt.otherwise, scopes + [{}])
+                self.exec_stmt(stmt.otherwise, scopes)
         elif kind is ast.While:
             while truthy(self.eval_expr(stmt.cond, scopes)):
-                self.exec_stmt(stmt.body, scopes + [{}])
+                self.exec_stmt(stmt.body, scopes)
         elif kind is ast.DoWhile:
             while True:
-                self.exec_stmt(stmt.body, scopes + [{}])
+                self.exec_stmt(stmt.body, scopes)
                 if not truthy(self.eval_expr(stmt.cond, scopes)):
                     break
         elif kind is ast.For:
             for expr in stmt.init:
                 self.eval_expr(expr, scopes)
             while truthy(self.eval_expr(stmt.cond, scopes)):
-                self.exec_stmt(stmt.body, scopes + [{}])
+                self.exec_stmt(stmt.body, scopes)
                 for expr in stmt.step:
                     self.eval_expr(expr, scopes)
         elif kind is ast.Return:
@@ -283,7 +271,7 @@ class Script(object):
                 return scope[name]
         if name in self.globals:
             return self.globals[name]
-        const = self.sim.constants.get(name)
+        const = CONSTANTS.get(name)
         if const is not None:
             return const
         raise ScriptError("Script run-time error", "unknown variable %s" % name)
