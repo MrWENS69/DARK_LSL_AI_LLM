@@ -16,8 +16,9 @@ link messages and emails (attributes listed in skills/lsl-dev/references/testing
 from ._version import __version__
 from .errors import LslSyntaxError, ScriptError, UnsupportedError
 from .interp import Script
-from .sim import Avatar, Chat, HttpOutRequest, SimObject, Simulator
+from .sim import Simulator
 from .testing import LslTestCase
+from .world import Avatar, Chat, HttpOutRequest, SimObject
 
 __all__ = ["Simulator", "LslTestCase", "Script", "ScriptError", "LslSyntaxError", "UnsupportedError",
            "Chat", "HttpOutRequest", "Avatar", "SimObject", "__version__"]
