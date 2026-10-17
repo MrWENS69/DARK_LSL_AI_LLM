@@ -108,6 +108,7 @@ code written by people, and models, who know C, JavaScript or Lua.
   never fail: an element of another type is cast when possible, otherwise the
   result is 0 or ""; an out-of-range index returns 0 or "" with no error. A
   float read with `llList2Integer` is truncated, a string "abc" gives 0.
+  Check with `llGetListEntryType`. (LlList2Integer, LlList2Float, LlList2String)
 - `llList2Vector` and `llList2Rot` convert nothing: an element that is not a
   vector (rotation), the string "<1,2,3>" included, gives ZERO_VECTOR
   (ZERO_ROTATION). Cast `llList2String` to read a vector stored as text.
@@ -118,7 +119,6 @@ code written by people, and models, who know C, JavaScript or Lua.
   and `~` come out as `%2D`, `%5F`, `%2E`, `%7E`. (LlEscapeURL)
 - `llListFindStrided(src, test, start, end, stride)` counts the stride from
   `start`, not from index 0. (LlListFindStrided)
-  Check with `llGetListEntryType`. (LlList2Integer, LlList2Float, LlList2String)
 - `llListFindList` is type-strict and case-sensitive: `"1"` does not match
   `1`, a string UUID does not match a key UUID. Returns -1 if absent. The
   idiom `if (~llListFindList(l, (list)x))` tests presence. (LlListFindList)
