@@ -63,8 +63,12 @@ def smoke(path):
     except (LslSyntaxError, OSError, UnicodeDecodeError) as err:
         sys.stderr.write("%s: %s\n" % (path, _safe(str(err))))
         return 2
-    sim.start()
-    sim.touch()
+    try:
+        sim.start()
+        sim.touch()
+    except RuntimeError as err:                 # the simulator's own guards: looping scripts
+        print("ERROR: %s" % _safe(str(err)))
+        return 1
     print("state: %s" % script.state)
     for line in sim.chat:
         print("chat[%d] %s: %s" % (line.channel, line.kind, _safe(line.text)))

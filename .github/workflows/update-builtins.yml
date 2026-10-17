@@ -30,7 +30,7 @@ jobs:
       - name: Detect changes (ignoring the header line that carries the source commit)
         id: diff
         run: |
-          if git diff --quiet -I'^// Generated from' -- builtins.txt builtins_txt.cc; then
+          if git diff --quiet -I'^// Generated from' -- builtins.txt builtins_txt.cc lsltest/data/builtins.txt; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -48,6 +48,7 @@ jobs:
             builtins.txt
             builtins_txt.cc
             builtins_version.txt
+            lsltest/data/builtins.txt
 
   pull-request:
     needs: refresh
@@ -70,7 +71,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add builtins.txt builtins_txt.cc builtins_version.txt
+          git add builtins.txt builtins_txt.cc builtins_version.txt lsltest/data/builtins.txt
           git commit -m "builtins: sync with secondlife/lsl-definitions ${commit}"
           git push origin "$branch"
           gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \

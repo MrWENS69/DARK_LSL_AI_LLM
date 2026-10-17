@@ -23,8 +23,9 @@ from .lexer import tokenize
 
 TYPES = ("integer", "float", "string", "key", "vector", "rotation", "quaternion", "list")
 
-MAX_NESTING = 200             # nested expressions or blocks a script may have
+MAX_NESTING = 120             # nested expressions or blocks a script may have (about 15 frames each)
 RECURSION_LIMIT = 3000        # Python frames the parser may use: MAX_NESTING levels and some margin
+MAX_VECTOR_TRY = 4            # nested vector literals whose components get the two-pass parse
 _BINARY_LEVELS = [
     ("&&", "||"),
     ("|",),
@@ -42,6 +43,7 @@ _ASSIGN_OPS = ("=", "+=", "-=", "*=", "/=", "%=")
 class Parser(object):
     def __init__(self, source):
         self.nesting = 0
+        self.vector_depth = 0
         self.tokens = tokenize(source)
         self.pos = 0
 
@@ -380,10 +382,14 @@ class Parser(object):
             return nodes.Literal(tok.value, line, col)
         if self.at_op("<"):
             self.advance()
-            items = [self.parse_vector_component()]
-            while self.at_op(","):
-                self.advance()
-                items.append(self.parse_vector_component())
+            self.vector_depth += 1
+            try:
+                items = [self.parse_vector_component()]
+                while self.at_op(","):
+                    self.advance()
+                    items.append(self.parse_vector_component())
+            finally:
+                self.vector_depth -= 1
             self.expect_op(">")
             if len(items) not in (3, 4):
                 self.error("a vector has 3 components, a rotation 4", tok)
@@ -419,22 +425,24 @@ class Parser(object):
     def parse_vector_component(self):
         # Inside < ... > a '>' closes the literal. Like the lslint grammar, a component followed by
         # ',' may be any expression; the last one stops before comparisons (shift level and above).
-        save = self.pos
-        try:
-            expr = self.parse_expression()
-            if self.at_op(","):
-                return expr
-        except LslSyntaxError:
-            pass
-        self.pos = save
+        # The first attempt parses a nested literal again, so past MAX_VECTOR_TRY levels only the
+        # second form is tried: the cost would otherwise double at each level.
+        if self.vector_depth <= MAX_VECTOR_TRY:
+            save = self.pos
+            try:
+                expr = self.parse_expression()
+                if self.at_op(","):
+                    return expr
+            except LslSyntaxError:
+                pass
+            self.pos = save
         return self.parse_binary(6)
 
 
 def parse(source):
     """Parse LSL source text into an nodes.Program."""
-    import sys
     old = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(old, 5000))     # deeply nested expressions in the corpus
+    sys.setrecursionlimit(max(old, RECURSION_LIMIT))
     try:
         return Parser(source).parse_program()
     except RecursionError:

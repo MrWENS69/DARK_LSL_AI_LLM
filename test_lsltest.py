@@ -419,9 +419,24 @@ class SimulatorTest(LslTestCase):
             self.load("no_such_file.lsl")
 
     def test_deeply_nested_expression_is_a_syntax_error_not_a_crash(self):
-        source = "default { state_entry() { integer x = %s1%s; } }" % ("(" * 20000, ")" * 20000)
-        with self.assertRaises(LslSyntaxError):
-            parse(source)
+        parse("default { state_entry() { integer x = %s1%s; } }" % ("(" * 100, ")" * 100))
+        for depth in (200, 20000):
+            with self.assertRaises(LslSyntaxError):
+                parse("default { state_entry() { integer x = %s1%s; } }" % ("(" * depth, ")" * depth))
+
+    def test_nested_vector_literals_parse_in_linear_time(self):
+        import time
+        source = "default { state_entry() { rotation r = %s1%s; } }" % ("<0, 0, 0, " * 14, " >" * 14)
+        started = time.perf_counter()
+        parse(source)
+        self.assertLess(time.perf_counter() - started, 2.0)
+
+    def test_bundled_builtins_match_the_root_file(self):
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "builtins.txt"), "rb") as root, \
+                open(os.path.join(here, "lsltest", "data", "builtins.txt"), "rb") as bundled:
+            self.assertEqual(root.read(), bundled.read())
 
     def test_every_handler_and_pure_builtin_names_a_real_builtin(self):
         import inspect
@@ -653,12 +668,16 @@ class CliTest(unittest.TestCase):
             good = os.path.join(folder, "good.lsl")
             with open(good, "w") as handle:
                 handle.write("default { state_entry() { llOwnerSay(\"\\x1b[31mred\"); } }")
+            looping = os.path.join(folder, "looping.lsl")
+            with open(looping, "w") as handle:
+                handle.write("default { state_entry() { llResetScript(); } }")
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 self.assertEqual(main([os.path.join(folder, "missing.lsl")]), 2)
                 self.assertEqual(main([bad]), 2)
                 self.assertEqual(main([folder]), 1)            # no test_*.py there
                 self.assertEqual(main([good]), 0)
+                self.assertEqual(main([looping]), 1)
             self.assertNotIn("\x1b", out.getvalue())           # control characters are escaped
 
 
