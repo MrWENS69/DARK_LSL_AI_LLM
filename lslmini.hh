@@ -583,6 +583,7 @@ class LLScriptFunctionExpression : public LLScriptExpression {
     LLScriptFunctionExpression( LLScriptIdentifier *identifier, LLScriptExpression *arguments )
       : LLScriptExpression( 2, identifier, arguments) {};
     virtual void determine_type();
+    virtual void final_pre_checks();
     virtual const char *get_node_name() { return "function call"; }
     virtual LLNodeSubType get_node_sub_type() { return NODE_FUNCTION_EXPRESSION; };
 };
@@ -597,6 +598,7 @@ class LLScriptVectorExpression : public LLScriptExpression {
     }
     virtual void determine_value();
     virtual void determine_type();
+    virtual void final_pre_checks();
     virtual const char *get_node_name() { return "vector expression"; }
     virtual LLNodeSubType get_node_sub_type() { return NODE_VECTOR_EXPRESSION; };
 };
@@ -611,6 +613,7 @@ class LLScriptQuaternionExpression : public LLScriptExpression {
     };
     virtual void determine_value();
     virtual void determine_type();
+    virtual void final_pre_checks();
     virtual const char *get_node_name() { return "quaternion expression"; };
     virtual LLNodeSubType get_node_sub_type() { return NODE_QUATERNION_EXPRESSION; };
 };

@@ -333,5 +333,7 @@ const char *Logger::warning_messages[] = {
       " variable causes a runtime error when accessing it",           // 20023
    "%s in the %s operand of `%s' always runs: LSL does not short-circuit"
       " && and ||, and the right operand is evaluated first. Use a nested if.", // 20024
+   "`%s' is written in one of the %s and used in another: LSL does not"
+      " document their evaluation order. Move the write out of the expression.", // 20025
 
 };

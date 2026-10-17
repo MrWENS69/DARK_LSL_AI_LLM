@@ -74,3 +74,4 @@ author meant.
 | E20022 | `W_DUPLICATE_LABEL_LSO` | Label `X` already defined in this function or event may cause unexpected behaviour (jumps will go to the last label found) |
 | E20023 | `W_UNINITIALIZED_VAR_IN_STR_KEY` | Initializing a global key or string using an uninitialized variable causes a runtime error when accessing it |
 | E20024 | `W_SIDE_EFFECT_IN_LOGICAL_OP` | X in the X operand of `X` always runs: LSL does not short-circuit && and ||, and the right operand is evaluated first. Use a nested if. |
+| E20025 | `W_SIBLING_WRITE_ORDER` | `X` is written in one of the X and used in another: LSL does not document their evaluation order. Move the write out of the expression. |

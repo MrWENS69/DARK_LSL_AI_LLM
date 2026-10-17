@@ -1,4 +1,5 @@
 #include "lslmini.hh"
+#include <vector>
 
 void LLASTNode::final_walk() {
    LLASTNode *node;
@@ -115,11 +116,30 @@ void check_cond(LLScriptExpression *expr, bool warn_if_true) {
    }
 }
 
+static void check_sibling_writes(LLASTNode *first, const char *what);
+
 void LLScriptListExpression::final_pre_checks() {
    LLASTNode *elem;
    for ( elem = get_children(); elem; elem = elem->get_next() )
       if ( elem->get_type()->get_itype() == LST_LIST )
           ERROR( IN(elem), E_LIST_IN_LIST );
+   if ( warn_side_effects )
+      check_sibling_writes( get_children(), "list elements" );
+}
+
+void LLScriptFunctionExpression::final_pre_checks() {
+   if ( warn_side_effects )
+      check_sibling_writes( get_child(1), "function arguments" );
+}
+
+void LLScriptVectorExpression::final_pre_checks() {
+   if ( warn_side_effects )
+      check_sibling_writes( get_children(), "vector components" );
+}
+
+void LLScriptQuaternionExpression::final_pre_checks() {
+   if ( warn_side_effects )
+      check_sibling_writes( get_children(), "rotation components" );
 }
 
 void LLScriptListConstant::final_pre_checks() {
@@ -425,4 +445,65 @@ void LLScriptExpression::final_pre_checks() {
    if (found) ERROR( IN(rhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "right", op );
    found = find_effect_or_failure(lhs);
    if (found) ERROR( IN(lhs), W_SIDE_EFFECT_IN_LOGICAL_OP, found, "left", op );
+}
+
+// -s, second rule: the order in which LSL evaluates the arguments of a call, the
+// elements of a list and the components of a vector or rotation is not
+// documented. A variable written in one of them (assignment, ++, --) and read
+// or written in another gives a result that depends on that order.
+
+// Names the subtree writes (assignment targets) and reads (every variable).
+static void collect_variable_uses(LLASTNode *node, std::set<std::string> &reads, std::set<std::string> &writes) {
+   LLASTNode *child;
+   LLASTNode *target;
+   LLScriptSymbol *symbol;
+   int op;
+   if (node == NULL) return;
+   if (node->get_node_type() == NODE_EXPRESSION) {
+      op = ((LLScriptExpression *)node)->get_operation();
+      switch (op) {
+         case '=': case ADD_ASSIGN: case SUB_ASSIGN: case MUL_ASSIGN: case DIV_ASSIGN: case MOD_ASSIGN:
+         case INC_OP: case DEC_OP: case POSTINC_OP: case POSTDEC_OP:
+            target = node->get_child(0);
+            if (target && target->get_node_type() == NODE_EXPRESSION
+                && target->get_node_sub_type() == NODE_LVALUE_EXPRESSION)
+               target = target->get_child(0);
+            if (target && target->get_node_type() == NODE_IDENTIFIER)
+               writes.insert(((LLScriptIdentifier *)target)->get_name());
+            break;
+      }
+   } else if (node->get_node_type() == NODE_IDENTIFIER) {
+      symbol = ((LLScriptIdentifier *)node)->get_symbol();
+      if (symbol && symbol->get_symbol_type() == SYM_VARIABLE)
+         reads.insert(((LLScriptIdentifier *)node)->get_name());
+   }
+   for (child = node->get_children(); child; child = child->get_next())
+      collect_variable_uses(child, reads, writes);
+}
+
+static void check_sibling_writes(LLASTNode *first, const char *what) {
+   std::vector<LLASTNode *> siblings;
+   std::vector<std::set<std::string> > reads;
+   std::vector<std::set<std::string> > writes;
+   std::set<std::string>::iterator name;
+   LLASTNode *node;
+   size_t i, j;
+   for (node = first; node; node = node->get_next()) {
+      siblings.push_back(node);
+      reads.push_back(std::set<std::string>());
+      writes.push_back(std::set<std::string>());
+      collect_variable_uses(node, reads.back(), writes.back());
+   }
+   if (siblings.size() < 2) return;
+   for (i = 0; i < siblings.size(); ++i) {
+      for (name = writes[i].begin(); name != writes[i].end(); ++name) {
+         for (j = 0; j < siblings.size(); ++j) {
+            if (j == i) continue;
+            if (reads[j].count(*name) || writes[j].count(*name)) {
+               ERROR( IN(siblings[i]), W_SIBLING_WRITE_ORDER, name->c_str(), what );
+               break;
+            }
+         }
+      }
+   }
 }
