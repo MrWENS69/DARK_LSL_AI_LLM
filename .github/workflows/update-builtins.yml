@@ -1,0 +1,45 @@
+name: Update builtins
+
+# Refreshes builtins.txt from secondlife/lsl-definitions once a week, rebuilds,
+# runs the test corpus and commits the result when something changed.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flex and bison
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison
+      - name: Refresh builtins
+        run: python3 update_builtins.py
+      - name: Detect changes
+        id: diff
+        run: |
+          if git diff --quiet -- builtins.txt builtins_txt.cc; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and test with the new builtins
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          make DEBUG= BUILD_VERSION_NUMBER=builtins-check
+          sh test.sh
+      - name: Commit
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add builtins.txt builtins_txt.cc builtins_version.txt
+          git commit -m "builtins: sync with secondlife/lsl-definitions $(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)"
+          git push

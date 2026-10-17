@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flex and bison
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison
+      - name: Build
+        run: make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
+      - name: Test corpus
+        run: sh test.sh
+      - name: Front end smoke test
+        run: python3 lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lslint-linux64
+          path: lslint
+
+  macos:
+    name: macOS build and tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flex and bison
+        run: brew install flex bison
+      - name: Build
+        run: |
+          export PATH="/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin:$PATH"
+          make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
+      - name: Test corpus
+        run: sh test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lslint-macos
+          path: lslint
+
+  windows:
+    name: Windows build and tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install winflexbison
+        shell: cmd
+        run: |
+          curl.exe -L -o wfb.zip https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip
+          mkdir C:\flexandbison
+          tar -xf wfb.zip -C C:\flexandbison
+      - name: Build
+        shell: cmd
+        run: build_win64.cmd ci-%GITHUB_SHA:~0,7%
+      - name: Test corpus
+        shell: bash
+        run: sh test.sh
+      - name: Front end smoke test
+        shell: bash
+        run: python lslcheck.py --strict scripts/test1.lsl scripts/globals.lsl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lslint-win64
+          path: lslint.exe

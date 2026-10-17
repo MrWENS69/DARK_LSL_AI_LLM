@@ -1,0 +1,67 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds Linux and Windows binaries and attaches them to
+# a GitHub release named after the tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison
+      - run: make DEBUG= BUILD_VERSION_NUMBER=${GITHUB_REF_NAME#v}
+      - run: sh test.sh
+      - run: |
+          mkdir -p dist
+          zip -j dist/lslint_${GITHUB_REF_NAME}_linux64.zip lslint builtins_version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: cmd
+        run: |
+          curl.exe -L -o wfb.zip https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip
+          mkdir C:\flexandbison
+          tar -xf wfb.zip -C C:\flexandbison
+      - shell: cmd
+        run: |
+          set TAG=%GITHUB_REF_NAME%
+          build_win64.cmd %TAG:~1%
+      - shell: bash
+        run: sh test.sh
+      - shell: bash
+        run: |
+          mkdir -p dist
+          7z a dist/lslint_${GITHUB_REF_NAME}_win64.zip lslint.exe builtins_version.txt lslcheck.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*.zip
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
