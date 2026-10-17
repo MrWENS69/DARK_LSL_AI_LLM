@@ -6,6 +6,9 @@
 #include <string.h>
 #include <ctype.h> // isprint()
 #include <stdint.h>
+#ifndef INT32_MIN
+#define INT32_MIN (-2147483647 - 1)   // C++98 builds without __STDC_LIMIT_MACROS
+#endif
 #include <cstdarg>
 #include <set>
 #include <string>

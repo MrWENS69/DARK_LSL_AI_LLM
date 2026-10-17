@@ -52,14 +52,36 @@ jobs:
         run: brew install flex bison
       - name: Build
         run: |
-          export PATH="/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin:$PATH"
+          export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/usr/local/opt/bison/bin:/usr/local/opt/flex/bin:$PATH"
           make DEBUG= BUILD_VERSION_NUMBER=ci-${GITHUB_SHA::7}
       - name: Test corpus
         run: sh test.sh
+      - name: Front end tests, lsltest, skill templates
+        run: |
+          python3 -m unittest -v test_lslcheck test_lsltest
+          python3 lslcheck.py --strict skills/lsl-dev/templates
+          python3 -m lsltest skills/lsl-dev/templates/tests
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lslint-macos
           path: lslint
+
+  python38:
+    name: lsltest on Python 3.8
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.8"
+      - name: lsltest and the skill templates on the oldest supported Python
+        run: |
+          python --version
+          python -m unittest -v test_lsltest
+          python -m lsltest skills/lsl-dev/templates/tests
 
   windows:
     name: Windows build and tests
