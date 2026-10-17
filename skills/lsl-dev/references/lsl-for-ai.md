@@ -97,7 +97,8 @@ code written by people, and models, who know C, JavaScript or Lua.
 - `jump label;` targets `@label;` in the same function or event only.
   Duplicate labels make the script fail to compile silently. Code after an
   unconditional `return` is a dead-code compile error. (Jump, Return)
-- A value returned from an event handler compiles and crashes the script. (Return)
+- A value returned from an event handler compiles (a compiler bug) and crashes
+  the script. (Return)
 
 ## 4. Lists and strings
 
@@ -142,6 +143,11 @@ code written by people, and models, who know C, JavaScript or Lua.
   case-sensitive: `"True"` is invalid. (LlJsonGetValue, Json_usage_in_LSL)
 - `llGetUnixTime` is an integer that overflows on 2038-01-19; `llGetTimestamp`
   is an ISO 8601 UTC string with sub-second precision. (LlGetUnixTime, LlGetTimestamp)
+
+- `llList2Json` keeps a numeric string quoted (BUG-6284) but turns the plain
+  strings "true", "false" and "null" into JSON literals and keeps well-formed
+  JSON text as JSON; `llJsonSetValue` stores a numeric string as a number.
+  (LlList2Json, LlJsonSetValue)
 
 ## 5. Memory
 
@@ -259,8 +265,8 @@ code written by people, and models, who know C, JavaScript or Lua.
   interval means it never fires. It survives state changes, not resets. The
   timer waits for the running event to finish. (LlSetTimerEvent, Timer)
 - `llSleep` sleeps at least until the next server frame (1/45 s). (LlSleep)
-- `llGetWallclock` is seconds since midnight Pacific time (SLT), whole
-  seconds; `llGetGMTclock` is UTC. (LlGetWallclock)
+- `llGetWallclock` is seconds since midnight Pacific time (SLT, with US
+  daylight saving), whole seconds; `llGetGMTclock` is UTC. (LlGetWallclock)
 - Forced delays after a call, in seconds: `llEmail` 20.0, `llLoadURL` 10.0,
   `llTeleportAgentHome` 5.0, `llGiveInventoryList` 3.0, `llInstantMessage`
   2.0, `llDialog` and `llTextBox` 1.0, `llSetPos`, `llSetRot`, `llSetTexture`,
@@ -320,7 +326,8 @@ code written by people, and models, who know C, JavaScript or Lua.
 - Permission dialogs never time out; the viewer allows 5 requests per 10 s
   per agent. (LlRequestPermissions)
 - Limits: 38 attachments, 47 attachment points, 256 prims per linkset,
-  64 m linking distance, prim name 63 bytes, description 127 bytes. (Limits)
+  64 m linking distance (54 m before 2023-06-27), prim name 63 bytes,
+  description 127 bytes. (Limits, Linkability_Rules)
 
 ## 14. Runtime errors you will meet
 

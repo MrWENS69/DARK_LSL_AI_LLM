@@ -58,8 +58,9 @@ def messages(text, array_name, start_code):
 
 
 def tidy(msg):
-    msg = msg.replace("\\n", " ").replace('\\"', '"').replace("`%s'", "`X`")
-    msg = re.sub(r"%[-0-9.]*[sdif]", "X", msg)
+    msg = msg.replace("\\n", " ").replace('\\"', '"')
+    msg = re.sub(r"`%(\d+\$)?s'", "`X`", msg)            # `%s' and the positional `%1$s'
+    msg = re.sub(r"%(\d+\$)?[-0-9.]*[sdif]", "X", msg)
     return re.sub(r"\s+", " ", msg).strip()
 
 

@@ -18,8 +18,8 @@ author meant.
 | E10006 | `E_UNDECLARED` | `X` is undeclared. |
 | E10007 | `E_UNDECLARED_WITH_SUGGESTION` | `X` is undeclared; did you mean X? |
 | E10008 | `E_INVALID_MEMBER` | Invalid member: `X.X'. |
-| E10009 | `E_MEMBER_NOT_VARIABLE` | Trying to access `X.X', but `%1$s' is a %3$s |
-| E10010 | `E_MEMBER_WRONG_TYPE` | Attempting to access `X.X', but `%1$s' is not a vector or rotation. |
+| E10009 | `E_MEMBER_NOT_VARIABLE` | Trying to access `X.X', but `X` is a X |
+| E10010 | `E_MEMBER_WRONG_TYPE` | Attempting to access `X.X', but `X` is not a vector or rotation. |
 | E10011 | `E_ARGUMENT_WRONG_TYPE` | Passing X as argument X of `X` which is declared as `X X'. |
 | E10012 | `E_TOO_MANY_ARGUMENTS` | Too many arguments to function `X`. |
 | E10013 | `E_TOO_FEW_ARGUMENTS` | Too few arguments to function `X`. |
