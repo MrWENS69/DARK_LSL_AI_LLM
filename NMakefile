@@ -37,11 +37,14 @@ NODEBUG=1
 !ELSE
 #############################################################
 # Replacement for win32.mak by Xenhat
-!IFNDEF NODEBUG
+!IFDEF NODEBUG
 cdebug = -Ox -DNDEBUG
-cvars = -D_MT -MD
-!ELSE
 cvars = -D_MT -MT
+!ELSE
+# Real debug build: no optimization, symbols, static debug CRT (fills uninitialized memory)
+cdebug = -Zi -Od
+cvars = -D_MT -MTd
+ldebug = /DEBUG
 !ENDIF
 
 cflags = -c -DCRTAPI1=_cdecl -DCRTAPI2=_cdecl -nologo -GS
