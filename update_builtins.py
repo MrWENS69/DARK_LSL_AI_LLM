@@ -38,7 +38,11 @@ SAFE_LINE = re.compile(r"[\x15\x20-\x7e\ufdd0-\ufdef]{1,1000}")  # \x15: the NAK
 
 
 def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "lslint-update-builtins"})
+    headers = {"User-Agent": "lslint-update-builtins"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = "Bearer " + token          # 5000 requests an hour instead of 60
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as resp:
         return resp.read(5000000)
 

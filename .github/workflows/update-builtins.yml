@@ -26,6 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flex bison
       - name: Refresh builtins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}      # api.github.com rate limit
         run: python3 update_builtins.py
       - name: Detect changes (ignoring the header line that carries the source commit)
         id: diff
@@ -57,6 +59,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write          # gh workflow run ci.yml on the branch
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -68,12 +71,18 @@ jobs:
         run: |
           commit=$(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)
           branch="builtins/${commit}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "branch $branch already exists: a pull request for this commit is open or was closed, nothing to do"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           git add builtins.txt builtins_txt.cc builtins_version.txt lsltest/data/builtins.txt
           git commit -m "builtins: sync with secondlife/lsl-definitions ${commit}"
           git push origin "$branch"
+          # a pull request opened with GITHUB_TOKEN triggers no workflow: start CI on the branch by hand
+          gh workflow run ci.yml --ref "$branch"
           gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
             --title "builtins: sync with secondlife/lsl-definitions ${commit}" \
-            --body "Automated refresh from lsl-definitions. Built and tested on Linux before this PR was opened; CI runs the full matrix here."
+            --body "Automated refresh from lsl-definitions. Built and tested on Linux before this PR was opened; the CI run on this branch was dispatched by the workflow (a pull request opened by GITHUB_TOKEN triggers none by itself)."
