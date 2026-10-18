@@ -5,7 +5,7 @@ import os
 import unittest
 
 from lsltest import LslSyntaxError, LslTestCase, ScriptError, Simulator, UnsupportedError
-from lsltest.parser import parse
+from lsltest.parser import Parser, parse
 from lsltest.signatures import CONSTANTS
 from lsltest.values import NULL_KEY, Vector
 
@@ -418,11 +418,23 @@ class SimulatorTest(LslTestCase):
             parse("default { state_entry() { %s %s } }" % ("{" * 120, "}" * 120))
 
     def test_nested_vector_literals_parse_in_linear_time(self):
-        import time
-        source = "default { state_entry() { rotation r = %s1%s; } }" % ("<0, 0, 0, " * 14, " >" * 14)
-        started = time.perf_counter()
-        parse(source)
-        self.assertLess(time.perf_counter() - started, 2.0)
+        # Steps = tokens consumed, the retries of parse_vector_component included: past MAX_VECTOR_TRY
+        # levels every extra level must cost the same number of steps, whatever the machine does.
+        class Counting(Parser):
+            steps = 0
+
+            def advance(self):
+                self.steps += 1
+                return Parser.advance(self)
+
+        def count_steps(depth):
+            parser = Counting("default { state_entry() { rotation r = %s1%s; } }" % ("<0, 0, 0, " * depth, " >" * depth))
+            parser.parse_program()
+            return parser.steps
+
+        # all past MAX_VECTOR_TRY = 4, and shallow: a lost cap costs 2^10 steps here, not a hung CI job
+        s6, s8, s10 = count_steps(6), count_steps(8), count_steps(10)
+        self.assertEqual(s10 - s8, s8 - s6, (s6, s8, s10))
 
     def test_bundled_builtins_match_the_root_file(self):
         import os

@@ -9,8 +9,10 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 import lslcheck
 
@@ -94,8 +96,48 @@ class FindBinaryTest(unittest.TestCase):
                 os.environ["LSLINT"] = env
 
 
+DOC_FIXTURE = {
+    "source": "fixture",
+    "functions": {
+        "llListen": {"return": "integer", "sleep": 0.0, "energy": 10.0,
+                     "tooltip": "Sets a callback for msg on channel from name and id.",
+                     "args": [["channel", "integer", "Channel to listen on."], ["name", "string", ""],
+                              ["id", "key", ""], ["msg", "string", ""]]},
+        "llSleep": {"return": "void", "sleep": 0.0, "energy": 0.0,
+                    "tooltip": "Puts the script to sleep for sec seconds.", "args": [["sec", "float", "Seconds to pause."]]},
+    },
+    "events": {
+        "listen": {"tooltip": "Triggered by chat on a channel the script listens to.",
+                   "args": [["channel", "integer", ""], ["name", "string", ""], ["id", "key", ""], ["msg", "string", ""]]},
+        "changed": {"tooltip": "Triggered when something about the object changes.", "args": [["changes", "integer", ""]]},
+    },
+    "constants": {
+        "CHANGED_INVENTORY": {"type": "integer", "value": "0x1", "tooltip": "The inventory changed."},
+        "CHANGED_REGION_START": {"type": "integer", "value": "0x400", "tooltip": "The region restarted."},
+        "ATTACH_RPEC": {"type": "integer", "value": "29", "tooltip": "Attachment point for the avatar's left pectoral.",
+                        "deprecated": True, "use": "ATTACH_LEFT_PEC"},    # the real quirk: RPEC is the left one
+    },
+}
+
+
 class DocTest(unittest.TestCase):
-    """--doc needs no binary: it reads lsltest/data/lsl_doc.json."""
+    """--doc needs no binary. The tests read DOC_FIXTURE, so an upstream tooltip rewrite cannot turn them red."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.fixture = os.path.join(cls.folder.name, "lsl_doc.json")
+        with open(cls.fixture, "w", encoding="utf-8") as handle:
+            json.dump(DOC_FIXTURE, handle)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def setUp(self):
+        patcher = mock.patch.object(lslcheck, "doc_file", lambda: self.fixture)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_doc(self, *argv):
         out = io.StringIO()
@@ -150,6 +192,11 @@ class DocTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with redirect_stdout(io.StringIO()):
                 lslcheck.main([])
+
+    def test_deprecated_constant_names_its_replacement(self):
+        code, out = self.run_doc("ATTACH_RPEC")
+        self.assertEqual(code, 0, out)
+        self.assertIn("deprecated, use ATTACH_LEFT_PEC", out)
 
 
 @unittest.skipUnless(os.path.isfile(BINARY), "lslint binary not built")
