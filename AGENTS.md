@@ -111,8 +111,9 @@ why. Commit the refreshed files and open a ticket for the reference.
 ## Commits and releases
 
 - One topic per commit, imperative subject, body explains why.
-- Pull requests target `master`. Development happens on feature branches;
-  `DARK_PROJECTS` is the integration branch of the maintainer.
+- Pull requests target `master`. Development happens on short-lived
+  branches that are fast-forwarded onto `master` once reviewed; there is no
+  other long-lived branch.
 - A tag `vX.Y.Z` triggers the release workflow, which builds Linux, macOS
   (Apple Silicon and Intel) and Windows binaries, publishes `SHA256SUMS.txt`
   and attaches everything to a GitHub release. `lslcheck.py` downloads from
@@ -126,8 +127,8 @@ daily builtins from lsl-definitions, GitHub Actions). Before a release:
 
 ```sh
 git fetch upstream mikelittman
-git log --oneline DARK_PROJECTS..upstream/master
-git diff --stat mikelittman/master DARK_PROJECTS -- '*.cc' '*.hh' '*.y' '*.l'
+git log --oneline master..upstream/master
+git diff --stat mikelittman/master master -- '*.cc' '*.hh' '*.y' '*.l'
 ```
 
 Cherry-pick code fixes, credit them in the README "Sources" section, and
