@@ -1,0 +1,14 @@
+# Dependabot keeps the pinned actions of the workflows current: one grouped
+# pull request a week, commit SHA and version comment updated together.
+# The Python side has no runtime dependency (pyproject.toml only names
+# setuptools for the build), so no pip ecosystem is listed.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
