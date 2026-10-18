@@ -2,7 +2,10 @@ name: Update builtins
 
 # Every day: refresh builtins.txt and lsltest/data/lsl_doc.json from
 # secondlife/lsl-definitions, rebuild, run the test corpus, and open a pull
-# request when the definitions changed.
+# request when the definitions changed. When the --doc reference cannot be
+# built from lsl_definitions.yaml, builtins.txt is refreshed all the same and
+# the pull request says that lsl_doc.json was kept; when nothing changed, the
+# run fails instead, so that the broken reference is signalled anyway (#27).
 # Nothing is pushed to the default branch without review.
 
 on:
@@ -22,6 +25,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
+      reference: ${{ steps.refresh.outputs.reference }}      # refreshed, or kept when it could not be built
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -31,9 +35,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flex bison
       - name: Refresh builtins
+        id: refresh
         env:
           GITHUB_TOKEN: ${{ github.token }}      # api.github.com rate limit
-        run: python3 update_builtins.py
+        run: |
+          # exit 3 means the builtins were refreshed and lsl_doc.json kept (the warning says why)
+          reference=refreshed
+          python3 update_builtins.py || { code=$?; [ "$code" -eq 3 ] || exit "$code"; reference=kept; }
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
       - name: Detect changes (ignoring the header line that carries the source commit)
         id: diff
         run: |
@@ -42,6 +51,11 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Fail when the reference was kept and no pull request will carry the warning
+        if: steps.refresh.outputs.reference == 'kept' && steps.diff.outputs.changed != 'true'
+        run: |
+          echo "::error::lsl_doc.json could not be rebuilt and builtins.txt is unchanged, so no pull request carries the warning"
+          exit 1
       - name: Build and test with the new builtins
         if: steps.diff.outputs.changed == 'true'
         run: |
@@ -75,9 +89,11 @@ jobs:
       - name: Commit on a branch and open the pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          REFERENCE: ${{ needs.refresh.outputs.reference }}
         run: |
           commit=$(sed -n 's/^Commit: \(.\{12\}\).*/\1/p' builtins_version.txt)
           branch="builtins/${commit}"
+          if [ "$REFERENCE" = "kept" ]; then branch="${branch}-doc-kept"; fi   # the rebuilt reference gets its own PR later
           if [ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[].number')" ]; then
             echo "a pull request for $branch is open or was closed: nothing to do"
             exit 0
@@ -89,8 +105,14 @@ jobs:
           git add builtins.txt builtins_txt.cc builtins_version.txt lsltest/data/builtins.txt lsltest/data/lsl_doc.json
           git commit -m "builtins: sync with secondlife/lsl-definitions ${commit}"
           git push origin "$branch"
+          title="builtins: sync with secondlife/lsl-definitions ${commit}"
+          body="Automated refresh of builtins.txt and lsltest/data/lsl_doc.json from lsl-definitions."
+          if [ "$REFERENCE" = "kept" ]; then
+            title="$title (lsl_doc.json kept)"
+            body="Automated refresh of builtins.txt from lsl-definitions. lsltest/data/lsl_doc.json was NOT refreshed: the --doc reference could not be built from lsl_definitions.yaml, see the warning on the run that opened this pull request. The previous file is kept."
+          fi
           gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
-            --title "builtins: sync with secondlife/lsl-definitions ${commit}" \
-            --body "Automated refresh of builtins.txt and lsltest/data/lsl_doc.json from lsl-definitions. Built and tested on Linux before this PR was opened; the CI run on this branch is dispatched by the workflow, since a pull request opened by GITHUB_TOKEN triggers none by itself."
+            --title "$title" \
+            --body "$body Built and tested on Linux before this PR was opened; the CI run on this branch is dispatched by the workflow, since a pull request opened by GITHUB_TOKEN triggers none by itself."
           # a pull request opened with GITHUB_TOKEN triggers no workflow: start CI on the branch by hand
           gh workflow run ci.yml --ref "$branch" || echo "::warning::could not dispatch ci.yml on $branch, run it by hand"

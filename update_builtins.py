@@ -14,7 +14,12 @@ Usage:
 
 The same run reads lsl_definitions.yaml (tooltips, parameters, delays) and
 writes lsltest/data/lsl_doc.json, the reference behind `lslcheck --doc`;
-with --from-file and no --yaml-file that file is left as it is.
+with --from-file and no --yaml-file that file is left as it was.
+
+Exit status: 0 when every file was written; 3 when the builtins were refreshed
+but lsltest/data/lsl_doc.json was left as it was because the reference could
+not be built (a warning on stderr, and on the run under GitHub Actions, says
+why); anything else is a failure, normally before anything was written.
 
 Requires Python 3.8+, standard library only.
 """
@@ -43,6 +48,7 @@ SAFE_LINE = re.compile(r"[\x15\x20-\x7e\ufdd0-\ufdef]{1,1000}")  # \x15: the NAK
 
 
 MAX_DOWNLOAD = 5000000
+EXIT_DOC_KEPT = 3     # builtins refreshed, lsl_doc.json left as it was
 
 
 def _write(path, text):
@@ -62,6 +68,14 @@ class _TokenStaysHome(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_TokenStaysHome())
+
+
+def _warn(message):
+    """On stderr, and as an annotation on the run under GitHub Actions (the runner reads commands on stdout:
+    one line, % encoded, so that no text from upstream can end the message or start another command)."""
+    print("warning: " + message, file=sys.stderr)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print("::warning::" + " ".join(message.split()).replace("%", "%25"))
 
 
 def fetch(url):
@@ -382,12 +396,12 @@ def write_doc(doc, path):
         handle.write('"source": %s\n}\n' % json.dumps(doc["source"]))
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--ref", default="main", help="git ref of %s (default: main)" % REPO)
     ap.add_argument("--from-file", help="use a local builtins.txt instead of downloading")
     ap.add_argument("--yaml-file", help="use a local lsl_definitions.yaml instead of downloading")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     yaml_text = None
     if args.yaml_file:
@@ -418,7 +432,12 @@ def main():
     body = "\n".join(l for l in text.splitlines() if l.strip() and not l.startswith("//"))
     new_text = "// Generated from %s by update_builtins.py\n%s\n" % (stamp, body)
     functions, events, constants = parse(new_text)  # validate before writing anything
-    doc = build_doc(read_definitions(yaml_text), functions, events, constants) if yaml_text is not None else None
+    doc, doc_error = None, None
+    if yaml_text is not None:
+        try:
+            doc = build_doc(read_definitions(yaml_text), functions, events, constants)
+        except Exception as exc:        # the reference is secondary: the builtins are refreshed all the same (#27)
+            doc_error = "%s: %s" % (type(exc).__name__, exc)
 
     old_text = BUILTINS_TXT.read_text(encoding="utf-8") if BUILTINS_TXT.exists() else ""
     report(old_text, new_text)
@@ -435,10 +454,12 @@ def main():
         write_doc(doc, DOC_JSON)
         written.append("lsltest/data/lsl_doc.json (%d functions, %d events, %d constants)"
                        % (len(doc["functions"]), len(doc["events"]), len(doc["constants"])))
+    elif doc_error:
+        _warn("lsltest/data/lsl_doc.json left as it was, the --doc reference could not be built: " + doc_error)
     else:
-        print("no lsl_definitions.yaml given: lsltest/data/lsl_doc.json left as it is")
+        print("no lsl_definitions.yaml given: lsltest/data/lsl_doc.json left as it was")
     print("wrote " + ", ".join(written))
-    return 0
+    return EXIT_DOC_KEPT if doc_error else 0
 
 
 if __name__ == "__main__":

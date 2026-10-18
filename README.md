@@ -240,8 +240,14 @@ The script rewrites `builtins.txt`, `builtins_txt.cc`,
 `lsltest/data/lsl_doc.json` (the `--doc` reference, from
 `lsl_definitions.yaml` of the same commit), and prints the added and removed
 names plus a count of changed signatures. Rebuild and run the tests
-afterwards. The daily GitHub Actions job does the same and opens a pull
-request.
+afterwards. When `lsl_definitions.yaml` cannot be parsed or disagrees with
+`builtins.txt`, the builtins are refreshed all the same, `lsl_doc.json` is
+left as it was and the script exits 3 after a warning. Exit codes: 0
+everything written, 3 builtins written and `lsl_doc.json` kept, anything
+else a failure, normally before anything was written. The daily GitHub
+Actions job does the same and opens a pull request, which says so when the
+reference was kept; when nothing else changed, the run fails instead so that
+the broken reference is noticed.
 
 ## Options of lslint
 

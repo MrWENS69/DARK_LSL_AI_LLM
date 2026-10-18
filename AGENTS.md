@@ -102,8 +102,11 @@ desktop machine until it is known to be assertion-free.
 
 Never edit `builtins.txt`, `builtins_txt.cc` or `builtins_version.txt` by
 hand, nor `lsltest/data/builtins.txt` and `lsltest/data/lsl_doc.json`. Run
-`python update_builtins.py`, rebuild, run the tests, commit the five files
-together with a message that names the lsl-definitions commit.
+`python update_builtins.py`, rebuild, run the tests, commit the files that
+changed (five when the reference was rebuilt) together with a message that
+names the lsl-definitions commit. Exit 3 is not a failure: the builtins were
+refreshed and `lsltest/data/lsl_doc.json` left as it was, the warning says
+why. Commit the refreshed files and open a ticket for the reference.
 
 ## Commits and releases
 
