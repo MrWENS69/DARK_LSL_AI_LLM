@@ -1,4 +1,4 @@
-// Generated from secondlife/lsl-definitions commit e0cdd24d8606 (2026-10-17) by update_builtins.py
+// Generated from secondlife/lsl-definitions commit f1906c95d53d (2026-10-20) by update_builtins.py
 integer llAbs( integer val )
 float llAcos( float val )
 void llAddToLandBanList( key avatar, float hours )
@@ -78,7 +78,7 @@ rotation llEuler2Rot( vector vec )
 void llEvade( key target, list options )
 void llExecCharacterCmd( integer command, list options )
 float llFabs( float val )
-key llFindNotecardTextCount( string notecardname, string pattern, list options )
+key llFindNotecardTextCount( string name, string pattern, list options )
 list llFindNotecardTextSync( string name, string pattern, integer start, integer count, list options )
 void llFleeFrom( vector position, float distance, list options )
 integer llFloor( float val )
